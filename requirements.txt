@@ -1,0 +1,39 @@
+# 核心框架
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0  # 用于读取Excel版需求输入集（.xlsx）
+
+# 多智能体协作
+langgraph>=0.0.30
+langchain>=0.1.0
+langchain-openai>=0.0.5
+
+# RAG与知识库
+chromadb>=0.4.18
+sentence-transformers>=2.2.0
+pypdf>=3.17.0  # 用于处理PDF文档
+PyMuPDF>=1.24.0  # 用于稳定解析标准PDF文本
+rapidocr-onnxruntime>=1.4.0  # 用于扫描版PDF的OCR回退（产出制品规范_2）
+opencv-python-headless>=4.10.0  # RapidOCR 运行依赖（无GUI）
+
+# UML生成
+plantuml>=0.3.0
+graphviz>=0.20.0
+
+# LLM集成
+openai>=1.3.0
+tiktoken>=0.5.0
+
+# 数据验证与序列化
+pydantic>=2.5.0
+jsonschema>=4.20.0
+
+# 开发工具
+black>=23.0.0
+pytest>=7.4.0
+python-dotenv>=1.0.0
+
+# 其他工具
+requests>=2.31.0
+beautifulsoup4>=4.12.0  # 用于网页抓取医疗标准文档

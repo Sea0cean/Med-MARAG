@@ -10,9 +10,12 @@ Description：LLM 运行时封装模块
 """
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from config import Config
@@ -131,6 +134,39 @@ def invoke_llm_text(runtime: LLMRuntime, messages: list[tuple[str, str]]) -> str
         return ""
     try:
         result = runtime.client.invoke(messages)
+    except Exception:
+        return ""
+    return str(result.content if hasattr(result, "content") else result).strip()
+
+
+def invoke_llm_vision(
+    runtime: LLMRuntime,
+    *,
+    prompt: str,
+    image_path: str | Path,
+    system_prompt: str = "你是严谨的文档图像理解助手，只描述图中可见内容，不臆造。",
+) -> str:
+    if runtime.client is None:
+        return ""
+    path = Path(image_path)
+    if not path.exists() or not path.is_file():
+        return ""
+
+    mime_type = mimetypes.guess_type(path.name)[0] or "image/png"
+    try:
+        data_url = f"data:{mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        result = runtime.client.invoke(
+            [
+                ("system", system_prompt),
+                (
+                    "user",
+                    [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                ),
+            ]
+        )
     except Exception:
         return ""
     return str(result.content if hasattr(result, "content") else result).strip()

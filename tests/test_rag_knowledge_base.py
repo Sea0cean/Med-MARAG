@@ -13,7 +13,9 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+from config import Config
 from rag.knowledge_base import KnowledgeBase
+import rag.knowledge_base as knowledge_base_module
 
 
 class FakeEmbeddingModel:
@@ -67,6 +69,8 @@ def build_test_kb() -> KnowledgeBase:
     kb.client = None
     kb.collection = FakeCollection()
     kb.embedding_model = FakeEmbeddingModel()
+    kb.ocr_engine = None
+    kb.vision_runtime = None
     return kb
 
 
@@ -135,6 +139,16 @@ def test_collection_query_builds_and_filter_for_multi_field_metadata():
     }
 
 
+def test_visual_queries_boost_pdf_image_description_metadata():
+    score = KnowledgeBase._metadata_soft_score(
+        {"type": "PDF图片说明", "source": "sample.pdf"},
+        {},
+        "预约挂号用例图中的参与者关系",
+    )
+
+    assert score >= 2.0
+
+
 def test_safe_zip_members_filters_path_traversal(tmp_path: Path):
     zip_path = tmp_path / "sample.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:
@@ -149,3 +163,66 @@ def test_safe_zip_members_filters_path_traversal(tmp_path: Path):
     assert "ok/readme.txt" in members
     assert "../evil.txt" not in members
     assert "/abs.txt" not in members
+
+
+class FakeVisionRuntime:
+    enabled = True
+
+
+class FakePixmap:
+    def save(self, path: str) -> None:
+        Path(path).write_bytes(b"fake-png")
+
+
+class FakePageWithImage:
+    def get_images(self, full: bool = True):
+        return [("xref",)]
+
+    def get_drawings(self):
+        return []
+
+    def get_pixmap(self, matrix=None, alpha: bool = False):
+        return FakePixmap()
+
+
+class FakeFitz:
+    class Matrix:
+        def __init__(self, *_: object) -> None:
+            pass
+
+
+def test_pdf_image_description_builds_searchable_figure_record(tmp_path: Path, monkeypatch):
+    kb = build_test_kb()
+    monkeypatch.setattr(Config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(Config, "RAG_ENABLE_PDF_IMAGE_DESCRIPTIONS", True)
+    monkeypatch.setattr(Config, "RAG_IMAGE_DESCRIPTION_PROVIDER", "openai")
+    monkeypatch.setattr(Config, "RAG_IMAGE_DESCRIPTION_MODEL", "gpt-4.1-mini")
+    monkeypatch.setattr(Config, "RAG_IMAGE_DESCRIPTION_MAX_PAGES", 5)
+    monkeypatch.setattr(Config, "RAG_IMAGE_DESCRIPTION_MIN_IMAGES_PER_PAGE", 1)
+    monkeypatch.setattr(knowledge_base_module, "fitz", FakeFitz)
+    monkeypatch.setattr(knowledge_base_module, "build_llm_runtime", lambda **_: FakeVisionRuntime())
+
+    def fake_vision(runtime, *, prompt: str, image_path: Path, system_prompt: str = "") -> str:
+        assert runtime.enabled is True
+        assert "sample.pdf" in prompt
+        assert Path(image_path).exists()
+        return "这是一张 UML 用例图，包含参与者患者和用例预约挂号，患者通过箭头连接到预约挂号。"
+
+    monkeypatch.setattr(knowledge_base_module, "invoke_llm_vision", fake_vision)
+
+    record = kb._build_page_image_description_record(
+        FakePageWithImage(),
+        source_name="sample.pdf",
+        source_path="/tmp/sample.pdf",
+        source_hash="abc123",
+        page_index=0,
+    )
+
+    assert record is not None
+    assert record["id"] == "PDFIMG-abc123-P001-I01"
+    assert record["metadata"]["type"] == "PDF图片说明"
+    assert record["metadata"]["page"] == 1
+    assert "image_path" in record["metadata"]
+    assert "用例图" in record["metadata"]["tags"]
+    assert "[FIGURE]" in record["content"]
+    assert "预约挂号" in record["content"]

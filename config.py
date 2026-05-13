@@ -59,6 +59,16 @@ class Config:
     }
     RAG_PDF_CHUNK_SIZE = int(os.getenv("RAG_PDF_CHUNK_SIZE", "1200"))
     RAG_PDF_CHUNK_OVERLAP = int(os.getenv("RAG_PDF_CHUNK_OVERLAP", "150"))
+    RAG_ENABLE_PDF_IMAGE_DESCRIPTIONS = os.getenv("RAG_ENABLE_PDF_IMAGE_DESCRIPTIONS", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    RAG_IMAGE_DESCRIPTION_PROVIDER = os.getenv("RAG_IMAGE_DESCRIPTION_PROVIDER", "openai").strip().lower()
+    RAG_IMAGE_DESCRIPTION_MODEL = os.getenv("RAG_IMAGE_DESCRIPTION_MODEL", "gpt-4.1-mini").strip()
+    RAG_IMAGE_DESCRIPTION_MAX_PAGES = int(os.getenv("RAG_IMAGE_DESCRIPTION_MAX_PAGES", "40"))
+    RAG_IMAGE_DESCRIPTION_MIN_IMAGES_PER_PAGE = int(os.getenv("RAG_IMAGE_DESCRIPTION_MIN_IMAGES_PER_PAGE", "1"))
     MAX_CLARIFICATION_QUESTIONS = int(os.getenv("MAX_CLARIFICATION_QUESTIONS", "3"))
     LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "60"))
     LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "1"))

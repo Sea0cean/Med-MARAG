@@ -106,10 +106,17 @@ OPENAI_API_KEY=your_openai_key
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
 
+# 可选：把 PDF 中的图片/图表转换为可检索的文字说明
+RAG_ENABLE_PDF_IMAGE_DESCRIPTIONS=false
+RAG_IMAGE_DESCRIPTION_PROVIDER=openai
+RAG_IMAGE_DESCRIPTION_MODEL=gpt-4.1-mini
+RAG_IMAGE_DESCRIPTION_MAX_PAGES=40
+
 PROJECT_ROOT=/Users/seaocean/projects/Python/Med-MARAG
 ```
 
 没有配置 API Key、provider 非法、或在线客户端初始化失败时，系统会自动回退为离线规则模式，仍可完成论文答辩所需的主链路演示。
+开启 `RAG_ENABLE_PDF_IMAGE_DESCRIPTIONS=true` 后，挂载 PDF 时会对包含图片、图表或 UML 结构的页面生成 `[FIGURE]` 说明 chunk；说明文本会和普通 PDF 文本一样进入 RAG 检索。
 
 ## 当前实现特点
 

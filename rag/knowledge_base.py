@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from config import Config
+from llm.provider import build_llm_runtime, invoke_llm_vision
 
 try:
     from chromadb import PersistentClient
@@ -123,6 +124,7 @@ class KnowledgeBase:
         self.collection = None
         self.embedding_model = None
         self.ocr_engine = None
+        self.vision_runtime = None
 
         if PersistentClient is not None and Settings is not None:
             try:
@@ -185,7 +187,11 @@ class KnowledgeBase:
         persisted_sources = self._get_persisted_pdf_sources()
         for path in Config.RAG_SOURCE_PDF_PATHS:
             # Avoid re-OCR / re-chunking large scanned PDFs on every startup if already persisted.
-            if persisted_sources and Path(path).name in persisted_sources:
+            if (
+                persisted_sources
+                and Path(path).name in persisted_sources
+                and not Config.RAG_ENABLE_PDF_IMAGE_DESCRIPTIONS
+            ):
                 continue
             self.mount_pdf_source(path)
 
@@ -449,6 +455,135 @@ class KnowledgeBase:
         except Exception:
             return ""
 
+    def _get_vision_runtime(self) -> Any | None:
+        if not Config.RAG_ENABLE_PDF_IMAGE_DESCRIPTIONS:
+            return None
+        provider = Config.RAG_IMAGE_DESCRIPTION_PROVIDER
+        if not Config.provider_is_valid(provider) or provider == "offline":
+            return None
+        if getattr(self, "vision_runtime", None) is None:
+            self.vision_runtime = build_llm_runtime(
+                provider=provider,
+                use_llm=True,
+                model_override=Config.RAG_IMAGE_DESCRIPTION_MODEL,
+            )
+        return self.vision_runtime if getattr(self.vision_runtime, "enabled", False) else None
+
+    @staticmethod
+    def _page_visual_signal_count(page: Any) -> int:
+        count = 0
+        try:
+            count += len(page.get_images(full=True) or [])
+        except Exception:
+            pass
+        try:
+            count += len(page.get_drawings() or [])
+        except Exception:
+            pass
+        return count
+
+    @staticmethod
+    def _image_description_tags(source_name: str, description: str) -> list[str]:
+        tags = ["PDF图片说明", "figure", "vision", source_name]
+        lowered = description.lower()
+        if any(marker in description for marker in ("用例图", "参与者", "用例")):
+            tags.append("用例图")
+        if any(marker in description for marker in ("类图", "属性", "方法", "多重性")):
+            tags.append("概念类模型")
+        if any(marker in description for marker in ("序列图", "生命线", "消息")):
+            tags.append("用例序列图")
+        if any(marker in description for marker in ("流程图", "箭头", "节点")):
+            tags.append("流程图")
+        if any(marker in lowered for marker in ("uml", "plantuml")):
+            tags.append("UML")
+        return list(dict.fromkeys(tags))
+
+    def _record_exists(self, doc_id: str) -> bool:
+        if doc_id in self.document_ids:
+            return True
+        if self.collection is None:
+            return False
+        try:
+            existing = self.collection.get(ids=[doc_id], include=[])
+            return bool(existing.get("ids"))
+        except Exception:
+            return False
+
+    def _render_page_preview(self, page: Any, *, source_hash: str, page_index: int) -> Path | None:
+        if fitz is None:
+            return None
+        image_dir = Path(Config.DATA_DIR) / "rag_imports" / "pdf_images"
+        try:
+            image_dir.mkdir(parents=True, exist_ok=True)
+            image_path = image_dir / f"{source_hash}-P{page_index + 1:03d}.png"
+            if image_path.exists():
+                return image_path
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            pix.save(str(image_path))
+            return image_path
+        except Exception:
+            return None
+
+    def _build_page_image_description_record(
+        self,
+        page: Any,
+        *,
+        source_name: str,
+        source_path: str,
+        source_hash: str,
+        page_index: int,
+    ) -> dict[str, Any] | None:
+        if not Config.RAG_ENABLE_PDF_IMAGE_DESCRIPTIONS:
+            return None
+        if Config.RAG_IMAGE_DESCRIPTION_MAX_PAGES > 0 and page_index + 1 > Config.RAG_IMAGE_DESCRIPTION_MAX_PAGES:
+            return None
+
+        visual_signal_count = self._page_visual_signal_count(page)
+        if visual_signal_count < Config.RAG_IMAGE_DESCRIPTION_MIN_IMAGES_PER_PAGE:
+            return None
+
+        doc_id = f"PDFIMG-{source_hash}-P{page_index + 1:03d}-I01"
+        if self._record_exists(doc_id):
+            return None
+
+        runtime = self._get_vision_runtime()
+        if runtime is None:
+            return None
+
+        image_path = self._render_page_preview(page, source_hash=source_hash, page_index=page_index)
+        if image_path is None:
+            return None
+
+        prompt = f"""
+请分析这张 PDF 页面截图中的图片、图表、截图或 UML/流程结构，并输出中文结构化说明。
+请重点提取：图的类型、可见标题、节点/参与者/实体、箭头或连接关系、表格/界面/医学图像中的关键信息。
+如果页面只是普通正文、页眉页脚或没有可用视觉信息，请只回答“无可用图片信息”。
+
+来源：{source_name}
+页码：{page_index + 1}
+"""
+        description = self._normalize_text(invoke_llm_vision(runtime, prompt=prompt, image_path=image_path))
+        if not description or description.strip() in {"无", "无可用图片信息"}:
+            return None
+
+        content = f"[FIGURE]\n来源：{source_name}\n页码：{page_index + 1}\n{description}\n[/FIGURE]"
+        return {
+            "id": doc_id,
+            "content": content,
+            "metadata": {
+                "domain": "标准" if self._infer_standard_type(description) else self._infer_domain_tag(description),
+                "type": "PDF图片说明",
+                "source": source_name,
+                "source_path": source_path,
+                "page": page_index + 1,
+                "chunk": 1,
+                "section": "FIGURE",
+                "image_path": str(image_path),
+                "visual_signal_count": visual_signal_count,
+                "tags": self._image_description_tags(source_name, description),
+            },
+        }
+
     def _extract_pdf_chunks(self, pdf_path: Path) -> list[dict[str, Any]]:
         if fitz is None or not pdf_path.exists():
             return []
@@ -474,33 +609,42 @@ class KnowledgeBase:
                 markdown_tables = self._extract_markdown_tables(page)
                 if markdown_tables:
                     normalized = "\n\n".join([normalized, *markdown_tables]).strip()
-                if not normalized:
-                    continue
 
-                page_chunks = self._chunk_text(
-                    normalized,
-                    chunk_size=Config.RAG_PDF_CHUNK_SIZE,
-                    overlap=Config.RAG_PDF_CHUNK_OVERLAP,
-                )
-                for chunk_index, chunk in enumerate(page_chunks, start=1):
-                    doc_type = self._infer_pdf_document_type(pdf_path, chunk)
-                    tags = self._build_pdf_tags(pdf_path, chunk, doc_type)
-                    chunk_records.append(
-                        {
-                            "id": f"PDF-{source_hash}-P{page_index + 1:03d}-C{chunk_index:02d}",
-                            "content": chunk,
-                            "metadata": {
-                                "domain": "标准" if doc_type in {"软件需求标准", "PDF标准文档"} else self._infer_domain_tag(chunk),
-                                "type": doc_type,
-                                "source": pdf_path.name,
-                                "source_path": str(pdf_path),
-                                "page": page_index + 1,
-                                "chunk": chunk_index,
-                                "section": self._extract_section_label(chunk),
-                                "tags": tags,
-                            },
-                        }
+                if normalized:
+                    page_chunks = self._chunk_text(
+                        normalized,
+                        chunk_size=Config.RAG_PDF_CHUNK_SIZE,
+                        overlap=Config.RAG_PDF_CHUNK_OVERLAP,
                     )
+                    for chunk_index, chunk in enumerate(page_chunks, start=1):
+                        doc_type = self._infer_pdf_document_type(pdf_path, chunk)
+                        tags = self._build_pdf_tags(pdf_path, chunk, doc_type)
+                        chunk_records.append(
+                            {
+                                "id": f"PDF-{source_hash}-P{page_index + 1:03d}-C{chunk_index:02d}",
+                                "content": chunk,
+                                "metadata": {
+                                    "domain": "标准" if doc_type in {"软件需求标准", "PDF标准文档"} else self._infer_domain_tag(chunk),
+                                    "type": doc_type,
+                                    "source": pdf_path.name,
+                                    "source_path": str(pdf_path),
+                                    "page": page_index + 1,
+                                    "chunk": chunk_index,
+                                    "section": self._extract_section_label(chunk),
+                                    "tags": tags,
+                                },
+                            }
+                        )
+
+                image_record = self._build_page_image_description_record(
+                    page,
+                    source_name=pdf_path.name,
+                    source_path=str(pdf_path),
+                    source_hash=source_hash,
+                    page_index=page_index,
+                )
+                if image_record:
+                    chunk_records.append(image_record)
         finally:
             doc.close()
 
@@ -725,33 +869,42 @@ class KnowledgeBase:
             markdown_tables = self._extract_markdown_tables(page)
             if markdown_tables:
                 normalized = "\n\n".join([normalized, *markdown_tables]).strip()
-            if not normalized:
-                continue
 
-            page_chunks = self._chunk_text(
-                normalized,
-                chunk_size=Config.RAG_PDF_CHUNK_SIZE,
-                overlap=Config.RAG_PDF_CHUNK_OVERLAP,
-            )
-            for chunk_index, chunk in enumerate(page_chunks, start=1):
-                doc_type = self._infer_pdf_document_type(Path(source_name), chunk)
-                tags = self._build_pdf_tags(Path(source_name), chunk, doc_type)
-                chunk_records.append(
-                    {
-                        "id": f"PDF-{source_hash}-P{page_index + 1:03d}-C{chunk_index:02d}",
-                        "content": chunk,
-                        "metadata": {
-                            "domain": "标准" if doc_type in {"软件需求标准", "PDF标准文档"} else self._infer_domain_tag(chunk),
-                            "type": doc_type,
-                            "source": source_name,
-                            "source_path": source_path,
-                            "page": page_index + 1,
-                            "chunk": chunk_index,
-                            "section": self._extract_section_label(chunk),
-                            "tags": tags,
-                        },
-                    }
+            if normalized:
+                page_chunks = self._chunk_text(
+                    normalized,
+                    chunk_size=Config.RAG_PDF_CHUNK_SIZE,
+                    overlap=Config.RAG_PDF_CHUNK_OVERLAP,
                 )
+                for chunk_index, chunk in enumerate(page_chunks, start=1):
+                    doc_type = self._infer_pdf_document_type(Path(source_name), chunk)
+                    tags = self._build_pdf_tags(Path(source_name), chunk, doc_type)
+                    chunk_records.append(
+                        {
+                            "id": f"PDF-{source_hash}-P{page_index + 1:03d}-C{chunk_index:02d}",
+                            "content": chunk,
+                            "metadata": {
+                                "domain": "标准" if doc_type in {"软件需求标准", "PDF标准文档"} else self._infer_domain_tag(chunk),
+                                "type": doc_type,
+                                "source": source_name,
+                                "source_path": source_path,
+                                "page": page_index + 1,
+                                "chunk": chunk_index,
+                                "section": self._extract_section_label(chunk),
+                                "tags": tags,
+                            },
+                        }
+                    )
+
+            image_record = self._build_page_image_description_record(
+                page,
+                source_name=source_name,
+                source_path=source_path,
+                source_hash=source_hash,
+                page_index=page_index,
+            )
+            if image_record:
+                chunk_records.append(image_record)
 
         mounted_count = 0
         for record in chunk_records:
@@ -871,6 +1024,9 @@ class KnowledgeBase:
                 score += 1.5
             if source and any(marker in source for marker in ("iso", "29148", "ieee", "iec")):
                 score += 1.0
+        if any(marker in normalized for marker in ("图片", "图表", "截图", "流程图", "用例图", "类图", "序列图", "figure", "image", "diagram")):
+            if doc_type == "PDF图片说明":
+                score += 2.0
         if section:
             score += 0.3
         return score
@@ -1048,6 +1204,10 @@ class KnowledgeBase:
         effective_filter = metadata_filter or (self._infer_metadata_filter(query_text) if use_metadata_filter else {})
         expanded_query = self._expand_query_text(query_text)
         candidate_count = max(n_results * 4, 8)
+        visual_query = any(
+            marker in (query_text or "").lower()
+            for marker in ("图片", "图表", "截图", "流程图", "用例图", "类图", "序列图", "figure", "image", "diagram")
+        )
         if self.collection is not None and self.embedding_model is not None:
             try:
                 query_embedding = self.embedding_model.encode(expanded_query or query_text).tolist()
@@ -1057,7 +1217,7 @@ class KnowledgeBase:
                     metadata_filter=effective_filter,
                 )
                 merged_results = list(prioritized_results)
-                if len(prioritized_results) < candidate_count:
+                if visual_query or len(prioritized_results) < candidate_count:
                     fallback_results = self._collection_query(
                         query_embedding,
                         n_results=candidate_count,
@@ -1114,7 +1274,7 @@ class KnowledgeBase:
 
         sources: set[str] = set()
         for metadata in records.get("metadatas", []) or []:
-            if metadata and metadata.get("type") in {"PDF标准文档", "软件需求标准"} and metadata.get("source"):
+            if metadata and metadata.get("type") in {"PDF标准文档", "软件需求标准", "PDF图片说明"} and metadata.get("source"):
                 sources.add(str(metadata["source"]))
         return sources
 
@@ -1128,7 +1288,7 @@ class KnowledgeBase:
         local_pdf_sources = {
             item.get("metadata", {}).get("source")
             for item in self.documents
-            if item.get("metadata", {}).get("type") in {"PDF标准文档", "软件需求标准"}
+            if item.get("metadata", {}).get("type") in {"PDF标准文档", "软件需求标准", "PDF图片说明"}
             and item.get("metadata", {}).get("source")
         }
         return {

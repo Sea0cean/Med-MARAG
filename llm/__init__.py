@@ -8,11 +8,12 @@ Create Date: 2026-03-18
 Description：LLM 包导出定义
 -------------------------------------------------
 """
-from .provider import LLMRuntime, build_llm_runtime, extract_json_object, invoke_llm_text
+from .provider import LLMRuntime, build_llm_runtime, extract_json_object, invoke_llm_text, invoke_llm_vision
 
 __all__ = [
     "LLMRuntime",
     "build_llm_runtime",
     "extract_json_object",
     "invoke_llm_text",
+    "invoke_llm_vision",
 ]

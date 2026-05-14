@@ -10,6 +10,7 @@ Description：RAG 知识库挂载与检索模块
 """
 from __future__ import annotations
 
+from collections import Counter
 import hashlib
 import re
 import subprocess
@@ -203,6 +204,59 @@ class KnowledgeBase:
         cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
         return cleaned.strip()
 
+    @classmethod
+    def _normalize_pdf_paragraph_breaks(cls, text: str) -> str:
+        lines = [line.strip() for line in (text or "").splitlines()]
+        paragraphs: list[str] = []
+        buffer = ""
+
+        def flush() -> None:
+            nonlocal buffer
+            if buffer:
+                paragraphs.append(buffer.strip())
+                buffer = ""
+
+        for line in lines:
+            if not line:
+                flush()
+                continue
+
+            if cls._is_structural_line(line):
+                flush()
+                paragraphs.append(line)
+                continue
+
+            if not buffer:
+                buffer = line
+                continue
+
+            buffer = f"{buffer}{cls._line_joiner(buffer, line)}{line}"
+
+        flush()
+        return cls._normalize_text("\n".join(paragraphs))
+
+    @classmethod
+    def _is_structural_line(cls, line: str) -> bool:
+        stripped = line.strip()
+        return bool(
+            cls._is_clause_heading(stripped)
+            or stripped.startswith(("[TABLE]", "[/TABLE]", "[OCR]", "[/OCR]", "[FIGURE]", "[/FIGURE]"))
+            or re.match(r"^(?:[-—–]{1,2}|[（(]?\d+[）)]|[A-Za-z][.)、]|[一二三四五六七八九十]+[、.])\s+\S+", stripped)
+            or stripped.endswith(("：", ":"))
+        )
+
+    @staticmethod
+    def _line_joiner(previous: str, current: str) -> str:
+        if not previous or not current:
+            return ""
+        if re.search(r"[\u4e00-\u9fff]$", previous) and re.match(r"^[\u4e00-\u9fff]", current):
+            return ""
+        if previous.endswith("-") and re.match(r"^[A-Za-z]", current):
+            return ""
+        if re.search(r"[A-Za-z0-9,.;:!?)\]]$", previous) and re.match(r"^[A-Za-z0-9([[]", current):
+            return " "
+        return ""
+
     @staticmethod
     def _is_clause_heading(line: str) -> bool:
         normalized = line.strip()
@@ -210,6 +264,11 @@ class KnowledgeBase:
             re.match(r"^(?:\d+(?:\.\d+){0,4}|[A-Z]\.\d+)\s+\S+", normalized)
             or re.match(r"^(?:Annex|Appendix)\s+[A-Z0-9]", normalized, re.I)
         )
+
+    @classmethod
+    def _starts_with_clause_heading(cls, text: str) -> bool:
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        return bool(first_line and cls._is_clause_heading(first_line))
 
     @classmethod
     def _split_structured_units(cls, text: str) -> list[str]:
@@ -283,6 +342,10 @@ class KnowledgeBase:
         chunks: list[str] = []
         buffer = ""
         for paragraph in paragraphs:
+            if buffer and cls._starts_with_clause_heading(paragraph):
+                chunks.append(buffer)
+                buffer = ""
+
             candidate = f"{buffer}\n\n{paragraph}".strip() if buffer else paragraph
             if len(candidate) <= chunk_size:
                 buffer = candidate
@@ -315,16 +378,140 @@ class KnowledgeBase:
         return overlapped_chunks
 
     @staticmethod
+    def _normalize_pdf_line(line: str) -> str:
+        normalized = str(line or "").replace("\u00a0", " ")
+        # PDF extraction can expose Word/Symbol-font bullets as private-use glyphs such as "".
+        normalized = re.sub(r"[\uf000-\uf8ff]", " ", normalized)
+        normalized = re.sub(r"[•●○◦▪▫■□◆◇▶▷‣⁃∙]", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized
+
+    @staticmethod
     def _should_skip_pdf_line(line: str) -> bool:
-        lowered = line.lower()
+        normalized = KnowledgeBase._normalize_pdf_line(line)
+        if not normalized:
+            return True
+
+        lowered = normalized.lower()
         skip_markers = [
             "authorized licensed use limited to",
             "downloaded from https://",
             "restrictions apply",
             "copyright protected document",
             "all rights reserved",
+            "ieee xplore",
+            "personal use is permitted",
+            "for all other uses",
+            "未经许可",
+            "版权所有",
         ]
-        return any(marker in lowered for marker in skip_markers)
+        if any(marker in lowered for marker in skip_markers):
+            return True
+
+        page_number_patterns = [
+            r"^(?:page|p\.)\s*\d{1,4}$",
+            r"^\d{1,4}$",
+            r"^[-–—]?\s*\d{1,4}\s*[-–—]?$",
+            r"^\d{1,4}\s*[/／]\s*\d{1,4}$",
+            r"^(?:page|p\.)\s*\d{1,4}\s*(?:of|/)\s*\d{1,4}$",
+            r"^[ivxlcdm]{1,8}$",
+        ]
+        return any(re.fullmatch(pattern, lowered, re.I) for pattern in page_number_patterns)
+
+    @staticmethod
+    def _normalize_margin_noise_key(line: str) -> str:
+        normalized = re.sub(r"\s+", " ", str(line or "")).strip().lower()
+        normalized = re.sub(r"\b(?:page|p\.)\s*\d{1,4}(?:\s*(?:of|/)\s*\d{1,4})?\b", "page #", normalized)
+        normalized = re.sub(r"\b\d{1,4}\s*[/／]\s*\d{1,4}\b", "#/#", normalized)
+        normalized = re.sub(r"\b[ivxlcdm]{1,8}\b", "#", normalized)
+        normalized = re.sub(r"\b\d{1,4}\b", "#", normalized)
+        return normalized.strip(" -_|\t")
+
+    @classmethod
+    def _extract_positioned_page_lines(cls, page: Any) -> list[dict[str, Any]]:
+        try:
+            payload = page.get_text("dict") or {}
+        except Exception:
+            return []
+
+        blocks = payload.get("blocks", []) or []
+        extracted: list[dict[str, Any]] = []
+        for block in blocks:
+            if block.get("type", 0) != 0:
+                continue
+            for line in block.get("lines", []) or []:
+                spans = line.get("spans", []) or []
+                text = "".join(str(span.get("text", "")) for span in spans).strip()
+                if not text:
+                    continue
+                bbox = line.get("bbox", block.get("bbox", [0, 0, 0, 0]))
+                y0 = float(bbox[1]) if len(bbox) > 1 else 0.0
+                y1 = float(bbox[3]) if len(bbox) > 3 else y0
+                extracted.append({"text": text, "y0": y0, "y1": y1})
+
+        extracted.sort(key=lambda item: (item["y0"], item["x0"]) if "x0" in item else (item["y0"], 0.0))
+        return extracted
+
+    @staticmethod
+    def _is_margin_noise_candidate(line: str, *, y0: float, y1: float, page_height: float) -> bool:
+        if page_height <= 0:
+            return False
+        text = re.sub(r"\s+", " ", str(line or "")).strip()
+        if not text or len(text) > 180:
+            return False
+        top_ratio = y0 / page_height
+        bottom_ratio = 1.0 - (y1 / page_height)
+        return top_ratio <= 0.11 or bottom_ratio <= 0.08
+
+    @classmethod
+    def _collect_repeated_margin_noise_keys(cls, doc: Any) -> set[str]:
+        counter: Counter[str] = Counter()
+        page_count = int(getattr(doc, "page_count", 0) or 0)
+        for page_index in range(page_count):
+            try:
+                page = doc.load_page(page_index)
+            except Exception:
+                continue
+            page_height = float(getattr(getattr(page, "rect", None), "height", 0.0) or 0.0)
+            page_keys: set[str] = set()
+            for item in cls._extract_positioned_page_lines(page):
+                text = item["text"]
+                if not cls._is_margin_noise_candidate(text, y0=item["y0"], y1=item["y1"], page_height=page_height):
+                    continue
+                key = cls._normalize_margin_noise_key(text)
+                if len(key) < 3:
+                    continue
+                page_keys.add(key)
+            counter.update(page_keys)
+        return {key for key, count in counter.items() if count >= 2}
+
+    @classmethod
+    def _extract_clean_page_text(cls, page: Any, *, repeated_margin_noise_keys: set[str] | None = None) -> str:
+        positioned_lines = cls._extract_positioned_page_lines(page)
+        if not positioned_lines:
+            raw_text = page.get_text() or ""
+            lines = [
+                cls._normalize_pdf_line(line)
+                for line in raw_text.splitlines()
+                if cls._normalize_pdf_line(line) and not cls._should_skip_pdf_line(line)
+            ]
+            return cls._normalize_pdf_paragraph_breaks("\n".join(lines))
+
+        repeated_margin_noise_keys = repeated_margin_noise_keys or set()
+        page_height = float(getattr(getattr(page, "rect", None), "height", 0.0) or 0.0)
+        kept_lines: list[str] = []
+        for item in positioned_lines:
+            text = cls._normalize_pdf_line(item["text"])
+            if not text or cls._should_skip_pdf_line(text):
+                continue
+            if (
+                repeated_margin_noise_keys
+                and cls._is_margin_noise_candidate(text, y0=item["y0"], y1=item["y1"], page_height=page_height)
+                and cls._normalize_margin_noise_key(text) in repeated_margin_noise_keys
+            ):
+                continue
+            kept_lines.append(text)
+        return cls._normalize_pdf_paragraph_breaks("\n".join(kept_lines))
 
     @staticmethod
     def _escape_markdown_cell(cell: Any) -> str:
@@ -591,17 +778,15 @@ class KnowledgeBase:
         doc = fitz.open(pdf_path)
         chunk_records: list[dict[str, Any]] = []
         source_hash = hashlib.md5(str(pdf_path).encode("utf-8")).hexdigest()[:10]
+        repeated_margin_noise_keys = self._collect_repeated_margin_noise_keys(doc)
 
         try:
             for page_index in range(doc.page_count):
                 page = doc.load_page(page_index)
-                raw_text = page.get_text() or ""
-                lines = [
-                    line.strip()
-                    for line in raw_text.splitlines()
-                    if line.strip() and not self._should_skip_pdf_line(line)
-                ]
-                normalized = self._normalize_text("\n".join(lines))
+                normalized = self._extract_clean_page_text(
+                    page,
+                    repeated_margin_noise_keys=repeated_margin_noise_keys,
+                )
                 if not normalized:
                     ocr_text = self._normalize_text(self._ocr_page(page))
                     if ocr_text:
@@ -617,20 +802,26 @@ class KnowledgeBase:
                         overlap=Config.RAG_PDF_CHUNK_OVERLAP,
                     )
                     for chunk_index, chunk in enumerate(page_chunks, start=1):
+                        section = self._extract_section_label(chunk)
+                        section_title = self._extract_section_title(chunk)
+                        chunk_content = self._strip_leading_section_number(chunk) if section_title else chunk
+                        if not chunk_content:
+                            continue
                         doc_type = self._infer_pdf_document_type(pdf_path, chunk)
-                        tags = self._build_pdf_tags(pdf_path, chunk, doc_type)
+                        tags = self._build_pdf_tags(pdf_path, chunk_content, doc_type)
                         chunk_records.append(
                             {
                                 "id": f"PDF-{source_hash}-P{page_index + 1:03d}-C{chunk_index:02d}",
-                                "content": chunk,
+                                "content": chunk_content,
                                 "metadata": {
-                                    "domain": "标准" if doc_type in {"软件需求标准", "PDF标准文档"} else self._infer_domain_tag(chunk),
+                                    "domain": "标准" if doc_type in {"软件需求标准", "PDF标准文档"} else self._infer_domain_tag(chunk_content),
                                     "type": doc_type,
                                     "source": pdf_path.name,
                                     "source_path": str(pdf_path),
                                     "page": page_index + 1,
                                     "chunk": chunk_index,
-                                    "section": self._extract_section_label(chunk),
+                                    "section": section,
+                                    "section_title": section_title,
                                     "tags": tags,
                                 },
                             }
@@ -651,12 +842,42 @@ class KnowledgeBase:
         return chunk_records
 
     @staticmethod
-    def _extract_section_label(text: str) -> str:
+    def _extract_section_heading(text: str) -> tuple[str, str]:
         first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
         if not first_line:
-            return ""
-        match = re.match(r"^((?:\d+(?:\.\d+){0,4}|Annex\s+[A-Z0-9]+))\b", first_line, re.I)
-        return match.group(1) if match else ""
+            return "", ""
+        match = re.match(
+            r"^((?:\d+(?:\.\d+){0,6}|[A-Z]\.\d+|Annex\s+[A-Z0-9]+|Appendix\s+[A-Z0-9]+))\b(?:\s+(.+))?$",
+            first_line,
+            re.I,
+        )
+        if not match:
+            return "", ""
+        return match.group(1), (match.group(2) or "").strip()
+
+    @classmethod
+    def _extract_section_label(cls, text: str) -> str:
+        label, _ = cls._extract_section_heading(text)
+        return label
+
+    @classmethod
+    def _extract_section_title(cls, text: str) -> str:
+        _, title = cls._extract_section_heading(text)
+        return title
+
+    @classmethod
+    def _strip_leading_section_number(cls, text: str) -> str:
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if not line.strip():
+                continue
+            section, title = cls._extract_section_heading(line)
+            if section and title:
+                lines[index] = title
+            elif section:
+                del lines[index]
+            break
+        return cls._normalize_text("\n".join(lines))
 
     def mount_pdf_source(self, pdf_path: str | Path) -> int:
         path = Path(pdf_path).expanduser()
@@ -720,7 +941,14 @@ class KnowledgeBase:
         if not path.exists() or not path.is_file():
             return 0
         raw = self._read_text_file(path)
-        normalized = self._normalize_text(raw)
+        normalized = self._normalize_pdf_paragraph_breaks(
+            "\n".join(
+                normalized_line
+                for line in raw.splitlines()
+                if (normalized_line := self._normalize_pdf_line(line))
+                and not self._should_skip_pdf_line(normalized_line)
+            )
+        )
         if not normalized:
             return 0
 
@@ -732,19 +960,25 @@ class KnowledgeBase:
         source_hash = hashlib.md5(str(path).encode("utf-8")).hexdigest()[:10]
         mounted_count = 0
         for chunk_index, chunk in enumerate(chunks, start=1):
+            section = self._extract_section_label(chunk)
+            section_title = self._extract_section_title(chunk)
+            chunk_content = self._strip_leading_section_number(chunk) if section_title else chunk
+            if not chunk_content:
+                continue
             doc_type = "软件需求标准" if "产出制品规范" in (source_label or path.name) else "文本资料"
             doc_id = f"TXT-{source_hash}-C{chunk_index:03d}"
             record = {
                 "id": doc_id,
-                "content": chunk,
+                "content": chunk_content,
                 "metadata": {
-                    "domain": self._infer_domain_tag(chunk),
+                    "domain": self._infer_domain_tag(chunk_content),
                     "type": doc_type,
                     "source": source_label or path.name,
                     "source_path": str(path),
                     "chunk": chunk_index,
-                    "section": self._extract_section_label(chunk),
-                    "tags": self._build_pdf_tags(Path(source_label or path.name), chunk, doc_type)
+                    "section": section,
+                    "section_title": section_title,
+                    "tags": self._build_pdf_tags(Path(source_label or path.name), chunk_content, doc_type)
                     if doc_type == "软件需求标准"
                     else [path.suffix.lower().lstrip("."), path.name],
                 },
@@ -853,15 +1087,13 @@ class KnowledgeBase:
         # Same behavior as mount_pdf_source, but from an already-open fitz doc.
         chunk_records: list[dict[str, Any]] = []
         source_hash = hashlib.md5(source_name.encode("utf-8")).hexdigest()[:10]
+        repeated_margin_noise_keys = self._collect_repeated_margin_noise_keys(doc)
         for page_index in range(getattr(doc, "page_count", 0) or 0):
             page = doc.load_page(page_index)
-            raw_text = page.get_text() or ""
-            lines = [
-                line.strip()
-                for line in raw_text.splitlines()
-                if line.strip() and not self._should_skip_pdf_line(line)
-            ]
-            normalized = self._normalize_text("\n".join(lines))
+            normalized = self._extract_clean_page_text(
+                page,
+                repeated_margin_noise_keys=repeated_margin_noise_keys,
+            )
             if not normalized:
                 ocr_text = self._normalize_text(self._ocr_page(page))
                 if ocr_text:
@@ -877,20 +1109,26 @@ class KnowledgeBase:
                     overlap=Config.RAG_PDF_CHUNK_OVERLAP,
                 )
                 for chunk_index, chunk in enumerate(page_chunks, start=1):
+                    section = self._extract_section_label(chunk)
+                    section_title = self._extract_section_title(chunk)
+                    chunk_content = self._strip_leading_section_number(chunk) if section_title else chunk
+                    if not chunk_content:
+                        continue
                     doc_type = self._infer_pdf_document_type(Path(source_name), chunk)
-                    tags = self._build_pdf_tags(Path(source_name), chunk, doc_type)
+                    tags = self._build_pdf_tags(Path(source_name), chunk_content, doc_type)
                     chunk_records.append(
                         {
                             "id": f"PDF-{source_hash}-P{page_index + 1:03d}-C{chunk_index:02d}",
-                            "content": chunk,
+                            "content": chunk_content,
                             "metadata": {
-                                "domain": "标准" if doc_type in {"软件需求标准", "PDF标准文档"} else self._infer_domain_tag(chunk),
+                                "domain": "标准" if doc_type in {"软件需求标准", "PDF标准文档"} else self._infer_domain_tag(chunk_content),
                                 "type": doc_type,
                                 "source": source_name,
                                 "source_path": source_path,
                                 "page": page_index + 1,
                                 "chunk": chunk_index,
-                                "section": self._extract_section_label(chunk),
+                                "section": section,
+                                "section_title": section_title,
                                 "tags": tags,
                             },
                         }

@@ -103,6 +103,156 @@ def test_structure_aware_chunking_preserves_clause_heads_and_overlap():
     assert chunks[1].splitlines()[0] != ""
 
 
+def test_chunking_keeps_adjacent_clause_sections_separate():
+    text = (
+        "8.2.2.3 医嘱执行与打印\n"
+        "医嘱执行与打印功能应包括：\n"
+        "单日诊疗执行项目；\n\n"
+        "8.2.2.4 护理管理\n"
+        "护理管理功能应包括：\n"
+        "护理计划：提供护理计划的编辑；\n\n"
+        "8.2.2.5 住院患者管理\n"
+        "住院患者管理功能包括：\n"
+        "入院登记：提供入院患者的登记。"
+    )
+
+    chunks = KnowledgeBase._chunk_text(text, chunk_size=1200, overlap=0)
+
+    assert len(chunks) == 3
+    assert chunks[0].startswith("8.2.2.3 医嘱执行与打印")
+    assert "8.2.2.4" not in chunks[0]
+    assert chunks[1].startswith("8.2.2.4 护理管理")
+    assert "8.2.2.5" not in chunks[1]
+    assert chunks[2].startswith("8.2.2.5 住院患者管理")
+
+
+def test_pdf_paragraph_breaks_are_joined_without_flattening_structure():
+    text = (
+        "第四步：识别关系的种类（详见3.2.3节）\n"
+        "除了一般性的关系之外，增补可能存在、重要且有意义（有意义即与当前系\n"
+        "统的业务主题相关）的泛化关系，以及识别并标注重要且有意义的组合关系。\n"
+        "之所以强调“重要且有意义”，原因在于软件工程的一些实践并不建议标注\n"
+        "所有与当前系统的业务主题相关的关系，以免形成过于复杂的蛛网。\n"
+        "——示例列表：\n"
+        "重要关系；\n"
+        "8.2.2.3 医嘱执行与打印\n"
+        "医嘱执行与打印功能应包括："
+    )
+
+    normalized = KnowledgeBase._normalize_pdf_paragraph_breaks(text)
+
+    assert "当前系\n统" not in normalized
+    assert "当前系统的业务主题相关" in normalized
+    assert "标注所有与当前系统的业务主题相关的关系" in normalized
+    assert "第四步：识别关系的种类" in normalized
+    assert "——示例列表：\n重要关系；" in normalized
+    assert "8.2.2.3 医嘱执行与打印\n医嘱执行与打印功能应包括：" in normalized
+
+
+def test_pdf_paragraph_joiner_handles_chinese_and_english_breaks():
+    assert KnowledgeBase._normalize_pdf_paragraph_breaks("当前系\n统") == "当前系统"
+    assert KnowledgeBase._normalize_pdf_paragraph_breaks("standards.\nAttention") == "standards. Attention"
+    assert KnowledgeBase._normalize_pdf_paragraph_breaks("3)]\nThe requirements") == "3)] The requirements"
+    assert KnowledgeBase._normalize_pdf_paragraph_breaks("configura-\ntion") == "configura-tion"
+
+
+def test_should_skip_pdf_line_filters_common_page_number_patterns():
+    assert KnowledgeBase._should_skip_pdf_line("12")
+    assert KnowledgeBase._should_skip_pdf_line("- 12 -")
+    assert KnowledgeBase._should_skip_pdf_line("Page 12")
+    assert KnowledgeBase._should_skip_pdf_line("12 / 200")
+    assert KnowledgeBase._should_skip_pdf_line("xiv")
+    assert not KnowledgeBase._should_skip_pdf_line("5.2 Requirement quality")
+
+
+def test_pdf_line_normalization_removes_symbol_font_bullets():
+    assert KnowledgeBase._normalize_pdf_line("") == ""
+    assert KnowledgeBase._normalize_pdf_line(" 单日诊疗执行项目；") == "单日诊疗执行项目；"
+    assert KnowledgeBase._normalize_pdf_line("• 药品单；") == "药品单；"
+
+
+def test_leading_section_number_is_removed_but_title_is_kept():
+    text = "8.2.2.3 医嘱执行与打印\n医嘱执行与打印功能应包括：\n单日诊疗执行项目；"
+
+    assert KnowledgeBase._extract_section_label(text) == "8.2.2.3"
+    assert KnowledgeBase._extract_section_title(text) == "医嘱执行与打印"
+
+    cleaned = KnowledgeBase._strip_leading_section_number(text)
+
+    assert "8.2.2.3" not in cleaned
+    assert cleaned.startswith("医嘱执行与打印\n医嘱执行与打印功能应包括")
+    assert "单日诊疗执行项目" in cleaned
+
+
+class FakeRect:
+    def __init__(self, height: float):
+        self.height = height
+
+
+class FakeStructuredPage:
+    def __init__(self, lines: list[tuple[str, float, float]], height: float = 1000):
+        self._lines = lines
+        self.rect = FakeRect(height)
+
+    def get_text(self, mode: str | None = None):
+        if mode == "dict":
+            return {
+                "blocks": [
+                    {
+                        "type": 0,
+                        "bbox": [0, 0, 100, self.rect.height],
+                        "lines": [
+                            {
+                                "bbox": [0, y0, 100, y1],
+                                "spans": [{"text": text}],
+                            }
+                            for text, y0, y1 in self._lines
+                        ],
+                    }
+                ]
+            }
+        return "\n".join(text for text, _, _ in self._lines)
+
+
+class FakeStructuredDoc:
+    def __init__(self, pages: list[FakeStructuredPage]):
+        self._pages = pages
+        self.page_count = len(pages)
+
+    def load_page(self, index: int) -> FakeStructuredPage:
+        return self._pages[index]
+
+
+def test_extract_clean_page_text_removes_repeated_headers_and_footers():
+    pages = [
+        FakeStructuredPage(
+            [
+                ("ISO/IEC/IEEE 29148:2018", 25, 40),
+                ("5.2 Requirement quality", 180, 210),
+                ("The requirement shall be unambiguous and verifiable.", 235, 270),
+                ("Page 12", 955, 975),
+            ]
+        ),
+        FakeStructuredPage(
+            [
+                ("ISO/IEC/IEEE 29148:2018", 25, 40),
+                ("5.3 Validation", 180, 210),
+                ("Validation confirms the requirement can be checked objectively.", 235, 270),
+                ("Page 13", 955, 975),
+            ]
+        ),
+    ]
+    doc = FakeStructuredDoc(pages)
+    repeated = KnowledgeBase._collect_repeated_margin_noise_keys(doc)
+
+    cleaned = KnowledgeBase._extract_clean_page_text(pages[0], repeated_margin_noise_keys=repeated)
+
+    assert "ISO/IEC/IEEE 29148:2018" not in cleaned
+    assert "Page 12" not in cleaned
+    assert "5.2 Requirement quality" in cleaned
+    assert "unambiguous and verifiable" in cleaned
+
+
 def test_infer_metadata_filter_uses_domain_and_standard_signals():
     assert KnowledgeBase._infer_metadata_filter("急诊分诊优先级规则") == {"domain": "分诊管理"}
     assert KnowledgeBase._infer_metadata_filter("ISO 29148 requirement standard") == {

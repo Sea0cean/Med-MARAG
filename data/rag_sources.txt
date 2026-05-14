@@ -1,0 +1,9 @@
+/Users/seaocean/Documents/毕业设计/RAG挂载文档/260107en_29148-2018-ISOIECIEEE.pdf
+/Users/seaocean/Documents/毕业设计/RAG挂载文档/病例书写基本规范.doc
+/Users/seaocean/Documents/毕业设计/RAG挂载文档/产出制品规范_1.pdf
+/Users/seaocean/Documents/毕业设计/RAG挂载文档/产出制品规范_2.pdf
+/Users/seaocean/Documents/毕业设计/RAG挂载文档/电子病历系统应用水平分级评价标准.docx
+/Users/seaocean/Documents/毕业设计/RAG挂载文档/基层医疗卫生信息系统基本功能规范.pdf
+/Users/seaocean/Documents/毕业设计/RAG挂载文档/基于电子病历的医院信息平台技术规范.pdf
+/Users/seaocean/Documents/毕业设计/RAG挂载文档/医院信息系统(HIS)软件基本功能规范.pdf
+/Users/seaocean/Documents/毕业设计/RAG挂载文档/Guide to Writing Requirements.pdf

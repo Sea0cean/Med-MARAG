@@ -133,6 +133,16 @@ def _format_rag_match(distance: Any) -> str:
         return "已检索"
 
 
+def _clean_rag_display_text(text: Any) -> str:
+    cleaned = str(text or "").replace("\u00a0", " ")
+    cleaned = re.sub(r"[\uf000-\uf8ff]", " ", cleaned)
+    cleaned = re.sub(r"[•●○◦▪▫■□◆◇▶▷‣⁃∙]", " ", cleaned)
+    cleaned = re.sub(r"^\s*\d+(?:\.\d+){1,6}\s+(.+?)(?:\n|$)", r"\1\n", cleaned, count=1)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def render_rag_results(knowledge_context: list[dict[str, Any]]) -> None:
     if not knowledge_context:
         st.info("当前运行未返回额外知识片段。")
@@ -142,6 +152,7 @@ def render_rag_results(knowledge_context: list[dict[str, Any]]) -> None:
         metadata = item.get("metadata", {}) or {}
         source = str(metadata.get("source") or metadata.get("type") or "知识库片段")
         section = str(metadata.get("section") or metadata.get("domain") or "").strip()
+        section_title = str(metadata.get("section_title") or "").strip()
         doc_type = str(metadata.get("type") or "").strip()
         tags = metadata.get("tags", []) or []
         match_text = _format_rag_match(item.get("distance"))
@@ -152,11 +163,11 @@ def render_rag_results(knowledge_context: list[dict[str, Any]]) -> None:
         meta_html = "".join(
             (
                 f'<span class="rag-meta-chip">{html.escape(text)}</span>'
-                for text in [section, doc_type]
+                for text in [section, section_title, doc_type]
                 if text
             )
         )
-        content = html.escape(str(item.get("content", "") or ""))
+        content = html.escape(_clean_rag_display_text(item.get("content", "")))
         doc_id = html.escape(str(item.get("id", f"RAG-{index}")))
 
         st.markdown(

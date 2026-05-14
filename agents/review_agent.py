@@ -20,7 +20,7 @@ from utils.requirement_utils import RequirementUtils
 
 
 class ReviewAgent:
-    """审查智能体。"""
+    """合规审查员智能体。"""
 
     DIAGRAM_CONSISTENCY_WEIGHT = 0.7
     DOMAIN_KNOWLEDGE_WEIGHT = 0.3
@@ -192,9 +192,9 @@ class ReviewAgent:
         evidence_block = "\n".join(evidence_lines)
         prompt = f"""
 你正在 Med-MARAG 的虚拟需求分析团队中工作。该团队包含：
-- 需求分析智能体：负责需求澄清与 EARS 规范化
+- 需求分析师智能体：负责需求澄清与 EARS 规范化
 - 系统架构师智能体：负责生成 UML 模型
-- 审查智能体（你）：负责检查模型质量、识别缺失信息、生成修正建议
+- 合规审查员智能体（你）：负责检查模型质量、识别缺失信息、生成修正建议
 
 你的任务是依据当前 EARS 需求和参考知识，对 PlantUML 和生成的文本用例进行证据驱动审查，并输出可执行反馈。
 
@@ -214,7 +214,7 @@ class ReviewAgent:
 3. 问题要尽量定位到类、属性、关系或代码位置
 4. 输出必须是严格 JSON，不要输出额外解释
 
-JSON 结构：
+JSON 结构参考如下：
 {{
   "scores": {{
     "accuracy": 0,

@@ -295,9 +295,9 @@ class ArchitectAgent:
         }.get(diagram_kind, "1. 生成完整 PlantUML")
         return f"""
 你正在 Med-MARAG 的虚拟需求分析团队中工作。该团队包含：
-- 需求分析智能体：负责输出结构化、规范化的 EARS 需求
+- 需求分析师智能体：负责输出结构化、规范化的 EARS 需求
 - 系统架构师智能体（你）：负责把规范化需求映射为 UML 模型
-- 审查智能体：负责检查模型质量并反馈修正意见
+- 合规审查员智能体：负责检查模型质量并反馈修正意见
 
 你的任务是依据规范化 EARS 需求，生成可解析的 {target_name}。
 
@@ -305,7 +305,7 @@ class ArchitectAgent:
 {internal_steps}
 
 团队约束：
-1. 你的上游输入来自需求分析智能体，下游反馈来自审查智能体
+1. 你的上游输入来自需求分析师智能体，下游反馈来自合规审查员智能体
 2. 如果审查反馈指出问题，你必须优先修正后再生成模型
 
 建模约束：
@@ -335,7 +335,7 @@ class ArchitectAgent:
 {references}
 
 【输出格式】
-你只能输出严格 JSON，不得输出任何额外内容：
+你只能输出严格 JSON，不得输出任何额外内容，JSON结构参考如下：
 {{
   "plantuml_code": "完整 {target_name} 代码",
   "design_elements": ["元素1", "元素2"],

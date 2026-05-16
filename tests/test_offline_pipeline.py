@@ -194,6 +194,25 @@ def test_review_step_blocks_on_real_structure_issues():
     assert state["Review_Blocking_Issues"] == ["缺少 @startuml 或 @enduml 包裹。"]
 
 
+def test_review_step_routes_requirement_issues_to_analyst():
+    class RequirementIssueReviewer:
+        def review_model_pack(self, *args, **kwargs):
+            return {
+                "scores": {"overall": 88},
+                "issues": ["需求信息不完整，缺少异常路径。"],
+            }
+
+    state = _review_step(
+        {"UML_Artifacts": {}, "Requirement_Items": [], "EARS_Requirement": ""},
+        RequirementIssueReviewer(),
+        PipelineConfig(provider="offline", review_pass_threshold=70),
+    )
+
+    assert state["Status"] == "NEEDS_REQUIREMENT_REVISION"
+    assert state["Review_Target"] == "analyst"
+    assert state["Review_Blocking_Issues"] == ["需求信息不完整，缺少异常路径。"]
+
+
 def test_domain_knowledge_alignment_rewards_domain_entity_coverage(monkeypatch):
     from rag.knowledge_base import knowledge_base
 

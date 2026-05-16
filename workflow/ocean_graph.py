@@ -166,9 +166,7 @@ def _review_step(state: GraphState, reviewer_agent: ReviewAgent, config: Pipelin
     if warning_issues:
         feedback_parts.append("警告问题：\n" + "\n".join(warning_issues))
     feedback = "\n\n".join(feedback_parts) if feedback_parts else "审查通过。"
-    review_target = "architect"
-    if any("用例" in issue or "口语" in issue for issue in blocking_issues):
-        review_target = "analyst"
+    review_target = _infer_review_target(blocking_issues, warning_issues)
 
     if passed:
         return {
@@ -218,6 +216,14 @@ def _split_review_issues(issues: list[str]) -> tuple[list[str], list[str]]:
         "EARS 结构不完整",
         "未体现系统行为主体",
         "动作仍然过于笼统",
+        "信息不完整",
+        "表达不清晰",
+        "缺少参与者",
+        "缺少条件",
+        "缺少动作",
+        "缺少对象",
+        "缺少约束",
+        "异常路径",
         "可能未正确闭合",
     )
     warnings: list[str] = []
@@ -229,6 +235,33 @@ def _split_review_issues(issues: list[str]) -> tuple[list[str], list[str]]:
         else:
             warnings.append(normalized)
     return blocking, warnings
+
+
+def _infer_review_target(blocking_issues: list[str], warning_issues: list[str]) -> str:
+    issues = blocking_issues + warning_issues
+    requirement_markers = (
+        "EARS 结构不完整",
+        "未体现系统行为主体",
+        "动作仍然过于笼统",
+        "需求信息",
+        "需求描述",
+        "需求表达",
+        "需求不完整",
+        "需求不清晰",
+        "信息不完整",
+        "表达不清晰",
+        "缺少参与者",
+        "缺少条件",
+        "缺少动作",
+        "缺少对象",
+        "缺少约束",
+        "异常路径",
+        "用例",
+        "口语",
+    )
+    if any(any(marker in issue for marker in requirement_markers) for issue in issues):
+        return "analyst"
+    return "architect"
 
 
 def _finalize_state(state: GraphState, runtime: LLMRuntime | None = None) -> GraphState:

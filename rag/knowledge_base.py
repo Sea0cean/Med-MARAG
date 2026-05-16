@@ -206,7 +206,15 @@ class KnowledgeBase:
 
     @classmethod
     def _normalize_pdf_paragraph_breaks(cls, text: str) -> str:
-        lines = [line.strip() for line in (text or "").splitlines()]
+        lines: list[str] = []
+        for raw_line in (text or "").splitlines():
+            normalized_line = cls._normalize_pdf_line(raw_line)
+            if not normalized_line:
+                lines.append("")
+                continue
+            if cls._should_skip_pdf_line(normalized_line):
+                continue
+            lines.append(normalized_line)
         paragraphs: list[str] = []
         buffer = ""
 
@@ -404,8 +412,25 @@ class KnowledgeBase:
             "for all other uses",
             "未经许可",
             "版权所有",
+            "copyright office",
         ]
         if any(marker in lowered for marker in skip_markers):
+            return True
+
+        compact = re.sub(r"\s+", "", normalized)
+        standard_noise_patterns = [
+            r"^ICS\b.*$",
+            r"^C\s*\d{1,3}$",
+            r"^WS\s*$",
+            r"^WS[/／]T\s*\d+[-—]\d{4}$",
+            r"^中华人民共和国(?:卫生行业|国家)?标准$",
+            r"^中国标准出版社.*$",
+            r"^\d{4}\s*[-—]\s*\d{1,2}\s*[-—]\s*\d{1,2}\s*(?:发布|实施)$",
+            r"^\d{4}[-—]\d{1,2}[-—]\d{1,2}(?:发布|实施)$",
+        ]
+        if any(re.fullmatch(pattern, normalized, re.I) for pattern in standard_noise_patterns):
+            return True
+        if re.fullmatch(r"\d{4}[-—]\d{1,2}[-—]\d{1,2}(?:发布|实施)", compact):
             return True
 
         page_number_patterns = [
@@ -788,7 +813,7 @@ class KnowledgeBase:
                     repeated_margin_noise_keys=repeated_margin_noise_keys,
                 )
                 if not normalized:
-                    ocr_text = self._normalize_text(self._ocr_page(page))
+                    ocr_text = self._normalize_pdf_paragraph_breaks(self._ocr_page(page))
                     if ocr_text:
                         normalized = f"[OCR]\n{ocr_text}\n[/OCR]".strip()
                 markdown_tables = self._extract_markdown_tables(page)
@@ -1095,7 +1120,7 @@ class KnowledgeBase:
                 repeated_margin_noise_keys=repeated_margin_noise_keys,
             )
             if not normalized:
-                ocr_text = self._normalize_text(self._ocr_page(page))
+                ocr_text = self._normalize_pdf_paragraph_breaks(self._ocr_page(page))
                 if ocr_text:
                     normalized = f"[OCR]\n{ocr_text}\n[/OCR]".strip()
             markdown_tables = self._extract_markdown_tables(page)

@@ -156,6 +156,26 @@ def test_pdf_paragraph_joiner_handles_chinese_and_english_breaks():
     assert KnowledgeBase._normalize_pdf_paragraph_breaks("configura-\ntion") == "configura-tion"
 
 
+def test_pdf_paragraph_breaks_drop_standard_cover_noise():
+    text = (
+        "ICS 11.020\n"
+        "C 07\n"
+        "WS\n"
+        "中华人民共和国卫生行业标准\n"
+        "2016 - 08 - 23 发布\n"
+        "基层医疗卫生信息系统基本功能规范\n"
+        "系统应支持基本医疗服务。"
+    )
+
+    normalized = KnowledgeBase._normalize_pdf_paragraph_breaks(text)
+
+    assert "ICS 11.020" not in normalized
+    assert "C 07" not in normalized
+    assert "2016 - 08 - 23 发布" not in normalized
+    assert "基层医疗卫生信息系统基本功能规范" in normalized
+    assert "系统应支持基本医疗服务" in normalized
+
+
 def test_should_skip_pdf_line_filters_common_page_number_patterns():
     assert KnowledgeBase._should_skip_pdf_line("12")
     assert KnowledgeBase._should_skip_pdf_line("- 12 -")

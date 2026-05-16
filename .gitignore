@@ -8,4 +8,5 @@ __pycache__/
 logs/
 output/
 data/chroma_db/
+data/chroma_db.backup_*/
 data/rag_imports/

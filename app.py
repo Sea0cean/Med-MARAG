@@ -133,6 +133,13 @@ def _format_rag_match(distance: Any) -> str:
         return "已检索"
 
 
+def _rag_sort_distance(item: dict[str, Any]) -> float:
+    try:
+        return float(item.get("distance", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def _clean_rag_display_text(text: Any) -> str:
     cleaned = str(text or "").replace("\u00a0", " ")
     cleaned = re.sub(r"[\uf000-\uf8ff]", " ", cleaned)
@@ -148,7 +155,8 @@ def render_rag_results(knowledge_context: list[dict[str, Any]]) -> None:
         st.info("当前运行未返回额外知识片段。")
         return
 
-    for index, item in enumerate(knowledge_context, start=1):
+    sorted_context = sorted(knowledge_context, key=_rag_sort_distance)
+    for index, item in enumerate(sorted_context, start=1):
         metadata = item.get("metadata", {}) or {}
         source = str(metadata.get("source") or metadata.get("type") or "知识库片段")
         section = str(metadata.get("section") or metadata.get("domain") or "").strip()

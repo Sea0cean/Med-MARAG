@@ -1029,7 +1029,7 @@ def inject_custom_styles() -> None:
                     flex: 1 1 auto;
                     min-height: 0;
                     overflow: auto;
-                    max-height: 28rem;
+                    max-height: 20rem;
                     padding-right: 0.1rem;
                 }
 
@@ -1439,13 +1439,13 @@ def render_result_tabs(result: dict[str, Any]) -> None:
         suggestion_items = review_report.get("suggestions", []) or []
         issue_cols = st.columns(2)
         with issue_cols[0]:
-            _render_review_issue_panel("阻断问题", blocking_issues, "critical", "当前未发现阻断性问题。")
-        with issue_cols[1]:
             _render_review_issue_panel("警告问题", warning_issues, "warning", "当前未发现警告问题。")
+        with issue_cols[1]:
+            _render_review_issue_panel("修正建议", suggestion_items, "neutral", "当前未生成额外修正建议。")
 
         suggestion_cols = st.columns(2)
         with suggestion_cols[0]:
-            _render_review_issue_panel("修正建议", suggestion_items, "neutral", "当前未生成额外修正建议。")
+            _render_review_issue_panel("阻断问题", blocking_issues, "critical", "当前未发现阻断性问题。")
         with suggestion_cols[1]:
             exception_report = result.get("Review_Exception_Report", {}) or {}
             if exception_report:

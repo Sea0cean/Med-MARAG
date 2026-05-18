@@ -29,17 +29,17 @@ class FakeChatOpenAI:
     def invoke(self, messages: list[tuple[str, str]]) -> FakeResponse:
         system_prompt = messages[0][1]
         user_prompt = messages[1][1]
-        if "类图" in user_prompt and "design_elements" in user_prompt:
+        if ("PlantUML 用例图" in user_prompt or "只输出用例图" in user_prompt) and "design_elements" in user_prompt:
+            return FakeResponse(
+                '{"plantuml_code":"@startuml\\nleft to right direction\\nactor \\"患者\\" as Patient\\nrectangle \\"Med-MARAG\\" {\\n  usecase \\"发送确认通知\\" as UC001\\n}\\nPatient --> UC001\\n@enduml",'
+                '"design_elements":["患者","发送确认通知"],'
+                '"mapping_summary":"输出用例图"}'
+            )
+        if ("PlantUML 类图" in user_prompt or "只输出类图" in user_prompt) and "design_elements" in user_prompt:
             return FakeResponse(
                 '{"plantuml_code":"说明文字\\n@startuml\\nclass Patient {\\n  +patientId: String\\n}\\nclass Appointment {\\n  +createAppointment()\\n}\\nPatient \\"1\\" -- \\"*\\" Appointment : creates\\n@enduml\\n额外说明",'
                 '"design_elements":["Patient","Appointment"],'
                 '"mapping_summary":"完成实体与关系映射"}'
-            )
-        if "用例图" in user_prompt and "design_elements" in user_prompt:
-            return FakeResponse(
-                '{"plantuml_code":"@startuml\\nleft to right direction\\nactor \\"患者\\" as Patient\\nrectangle \\"Med-MARAG\\" {\\n  usecase \\"提交预约申请\\" as UC001\\n  usecase \\"接收确认通知\\" as UC002\\n}\\nPatient --> UC001\\nPatient --> UC002\\n@enduml",'
-                '"design_elements":["患者","提交预约申请","接收确认通知"],'
-                '"mapping_summary":"输出用例图"}'
             )
         if "序列图" in user_prompt and "design_elements" in user_prompt:
             return FakeResponse(
@@ -158,6 +158,82 @@ def test_pipeline_with_llm_can_disable_rag(monkeypatch):
     assert state["LLM_Provider"] == "openai"
     assert state["Review_Report"]["review_source"] == "llm"
     assert state["Knowledge_Context"] == []
+
+
+def test_pipeline_falls_back_to_local_use_case_diagram_when_llm_over_expands(monkeypatch):
+    class OverExpandedUseCaseChatOpenAI:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def invoke(self, messages: list[tuple[str, str]]) -> FakeResponse:
+            system_prompt = messages[0][1]
+            if "你是 UML 建模专家" in system_prompt:
+                user_prompt = messages[1][1]
+                if ("PlantUML 用例图" in user_prompt or "只输出用例图" in user_prompt) and "design_elements" in user_prompt:
+                    return FakeResponse(
+                        '{"plantuml_code":"@startuml\\nleft to right direction\\nactor \\"患者\\" as Patient\\nrectangle \\"Med-MARAG\\" {\\n  usecase \\"录入患者基本信息\\" as UC001\\n  usecase \\"建立临时急诊档案\\" as UC002\\n  usecase \\"补缴费用\\" as UC003\\n  usecase \\"进行急诊挂号\\" as UC004\\n  usecase \\"开具电子处方\\" as UC005\\n  usecase \\"查看分诊记录\\" as UC006\\n}\\nPatient --> UC001\\nPatient --> UC002\\nPatient --> UC003\\nPatient --> UC004\\nPatient --> UC005\\nPatient --> UC006\\n@enduml",'
+                        '"design_elements":["患者","录入患者基本信息","建立临时急诊档案","补缴费用","进行急诊挂号","开具电子处方","查看分诊记录"],'
+                        '"mapping_summary":"输出过度拆分的用例图"}'
+                    )
+                return FakeResponse("@startuml\nclass Patient\n@enduml")
+            if "PlantUML:" in user_prompt:
+                return FakeResponse(
+                    '{"scores":{"accuracy":90,"completeness":90,"clarity":90,"compliance":90,"overall":90},'
+                    '"issues":[],"suggestions":["保持当前结构"]}'
+                )
+            return FakeResponse(
+                '<thinking>识别到急诊流程。</thinking>'
+                '{"actors":["患者","护士","医生","系统"],"entities":["EmergencyRecord"],'
+                '"business_flow":["录入分诊信息","建立临时急诊档案","补缴费用"],'
+                '"missing_info":[],"needs_clarification":false,"clarification_questions":[],"ears_requirement":"IF 患者到达急诊 THEN 系统应录入患者基本信息 AND 系统应建立临时急诊档案 AND 系统应补缴费用 ENDIF",'
+                '"summary":"急诊需求已规范化","risks":[],"use_case":{"name":"办理急诊流程","goal":"完成急诊挂号与档案处理"}}'
+            )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setattr("llm.provider.ChatOpenAI", OverExpandedUseCaseChatOpenAI)
+
+    state = run_modeller_pipeline(
+        "当急诊患者到达医院时，护士应录入患者基本信息，系统应建立临时急诊档案并支持补缴费用。",
+        config=PipelineConfig(provider="openai", max_iterations=2),
+    )
+
+    assert state["UML_Artifacts"]["use_case_diagram_source"] == "local"
+    assert state["UML_Artifacts"]["use_case_diagram"] == state["UML_Artifacts"]["local_use_case_diagram"]
+    assert state["UML_Artifacts"]["llm_use_case_diagram"].count("usecase ") > len(state["Requirement_Items"])
+
+
+def test_pipeline_recovers_full_ears_when_llm_returns_empty_ears(monkeypatch):
+    class EmptyEarsChatOpenAI:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def invoke(self, messages: list[tuple[str, str]]) -> FakeResponse:
+            system_prompt = messages[0][1]
+            if "你是 UML 建模专家" in system_prompt:
+                return FakeResponse("@startuml\nclass Patient\n@enduml")
+            return FakeResponse(
+                '<thinking>识别到预约挂号场景。</thinking>'
+                '{"actors":["患者","系统"],"entities":["Appointment"],'
+                '"business_flow":["患者发起预约","系统创建预约记录"],'
+                '"missing_info":[],"needs_clarification":false,"clarification_questions":[],'
+                '"ears_requirement":"",'
+                '"summary":"EARS 输出为空","risks":[],'
+                '"use_case":{"name":"发送确认通知","goal":"患者完成预约挂号"}}'
+            )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setattr("llm.provider.ChatOpenAI", EmptyEarsChatOpenAI)
+
+    state = run_modeller_pipeline(
+        "当患者预约挂号成功时，系统应发送确认短信给患者",
+        config=PipelineConfig(provider="openai", max_iterations=2),
+    )
+
+    assert state["Requirement_Items"][0]["ears_requirement"].splitlines() == [
+        "IF 患者预约挂号成功",
+        "THEN 系统应发送确认短信给患者",
+        "ENDIF",
+    ]
 
 
 def test_pipeline_continues_and_exposes_suggestions_when_analyst_requests_clarification(monkeypatch):

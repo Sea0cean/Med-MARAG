@@ -255,6 +255,7 @@ PlantUML:
         self,
         uml_artifacts: dict[str, Any],
         requirement_items: list[dict[str, Any]] | None = None,
+        use_cases: list[dict[str, Any]] | None = None,
         ears_requirement: str = "",
     ) -> dict[str, Any]:
         diagrams = {
@@ -282,10 +283,11 @@ PlantUML:
             sources.add(review.get("review_source", "local"))
 
         if requirement_items:
-            use_case_count = len(requirement_items)
+            structured_use_cases = use_cases or [item.get("use_case", {}) for item in requirement_items]
+            use_case_count = len(structured_use_cases)
             if diagrams["use_case_diagram"].count("usecase ") < use_case_count:
-                issues.append("用例图数量少于需求条目数量。")
-            use_case_review = self.review_use_case_pack([item.get("use_case", {}) for item in requirement_items])
+                issues.append("用例图数量少于业务用例数量。")
+            use_case_review = self.review_use_case_pack(structured_use_cases)
             issues.extend(use_case_review.get("issues", []))
             details["use_cases"] = use_case_review
             sources.add(use_case_review.get("review_source", "local"))

@@ -27,6 +27,7 @@ from test_case_generator import TestCaseGenerator
 from traceability_matrix import traceability_matrix
 from config import Config
 from utils.requirement_utils import RequirementUtils
+from utils.use_case_extractor import UseCaseExtractor
 
 
 class GraphState(TypedDict, total=False):
@@ -118,13 +119,14 @@ def _analyst_step(state: GraphState, analyst_agent: AnalystAgent) -> GraphState:
     deduped_questions = list(dict.fromkeys(question for question in clarification_questions if question))
     if Config.MAX_CLARIFICATION_QUESTIONS > 0:
         deduped_questions = deduped_questions[: Config.MAX_CLARIFICATION_QUESTIONS]
+    use_cases = UseCaseExtractor.extract(items)
 
     return {
         **state,
         "LLM_Enabled": bool(state.get("LLM_Enabled", False)),
         "Requirement_Items": items,
         "Knowledge_Context": list(knowledge_context.values()),
-        "Use_Cases": [item["use_case"] for item in items],
+        "Use_Cases": use_cases,
         "EARS_Requirement": "\n\n".join(item["ears_requirement"] for item in items),
         "Analyst_Thinking": analyst_thinking,
         "Clarification_Questions": deduped_questions,
@@ -139,7 +141,11 @@ def _architect_step(state: GraphState, architect_agent: ArchitectAgent) -> Graph
     if not requirement_items:
         return {**state, "Status": "INVALID_INPUT"}
 
-    model = architect_agent.generate_uml(requirement_items, feedback=state.get("Review_Feedback", ""))
+    model = architect_agent.generate_uml(
+        requirement_items,
+        feedback=state.get("Review_Feedback", ""),
+        use_cases=state.get("Use_Cases", []) or [],
+    )
     return {
         **state,
         "UML_Code": model.get("plantuml_code", ""),
@@ -154,6 +160,7 @@ def _review_step(state: GraphState, reviewer_agent: ReviewAgent, config: Pipelin
     review = reviewer_agent.review_model_pack(
         state.get("UML_Artifacts", {}),
         requirement_items=state.get("Requirement_Items", []),
+        use_cases=state.get("Use_Cases", []) or [],
         ears_requirement=state.get("EARS_Requirement", ""),
     )
     issues = review.get("issues", []) or []

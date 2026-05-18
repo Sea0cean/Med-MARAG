@@ -99,6 +99,17 @@ class AnalystAgent:
                     analysis["ears_requirement"] = llm_result["ears_requirement"]
                 if llm_result.get("use_case"):
                     analysis["use_case"] = {**analysis["use_case"], **llm_result["use_case"]}
+                    analysis["use_case"]["name"] = RequirementUtils.normalize_use_case_name(
+                        str(analysis["use_case"].get("name", "") or ""),
+                        original_text=requirement_text,
+                        domain=str(analysis.get("domain", "") or ""),
+                        actions=analysis.get("actions", []) or [],
+                    )
+                    analysis["use_case"]["goal"] = f"{analysis.get('primary_actor', '用户')}完成{analysis['use_case']['name']}"
+                analysis["ears_requirement"] = RequirementUtils.normalize_ears_text(
+                    analysis.get("ears_requirement", ""),
+                    fallback_requirement=requirement_text,
+                )
         return analysis
 
     def _llm_requirement_enhancement(
@@ -154,7 +165,7 @@ JSON 结构参考如下：
   "summary": "不超过120字的规范化说明",
   "risks": ["风险1", "风险2"],
   "use_case": {{
-    "name": "正式、简洁的用例名称，用例命名采用动词 + 宾语的动宾结构，站在用户视角，简洁无冗余",
+    "name": "正式、简洁的用例名称，采用动词 + 宾语的动宾结构，站在用户视角，通常不超过8个汉字，例如：处理支付、查看病历、发送通知",
     "goal": "正式的业务目标描述"
   }}
 }}
@@ -186,6 +197,8 @@ JSON 结构参考如下：
         ears_requirement = parsed.ears_requirement.strip()
         if ears_requirement and not self._looks_like_ears(ears_requirement):
             ears_requirement = ""
+        if not ears_requirement:
+            ears_requirement = RequirementUtils.convert_to_ears(requirement_text)
 
         return {
             "thinking_trace": thinking_trace,

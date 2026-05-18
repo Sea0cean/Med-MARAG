@@ -140,7 +140,7 @@ class RAArtifactGenerator:
         spec_sources = sorted({(item.get("metadata") or {}).get("source", "") for item in spec_refs if item.get("metadata")})
         uml_pack = uml_artifacts or {}
 
-        ra1_code = (uml_pack.get("use_case_diagram", "") or "").strip() or PlantUMLUtils.generate_use_case_diagram(requirement_items)
+        ra1_code = (uml_pack.get("use_case_diagram", "") or "").strip() or PlantUMLUtils.generate_use_case_diagram_from_use_cases(use_cases)
         ra1_url = PlantUMLUtils.render_plantuml(ra1_code)
 
         ra2 = []

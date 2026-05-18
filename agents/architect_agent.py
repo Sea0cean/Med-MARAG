@@ -10,6 +10,7 @@ Description：Architect Agent 实现
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -47,7 +48,12 @@ class ArchitectAgent:
         self.llm = self.runtime.client
         self.enable_rag = enable_rag
 
-    def generate_uml(self, requirement: str | list[dict[str, Any]], feedback: str = "") -> dict[str, Any]:
+    def generate_uml(
+        self,
+        requirement: str | list[dict[str, Any]],
+        feedback: str = "",
+        use_cases: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         if isinstance(requirement, list):
             requirement_items = requirement
         else:
@@ -55,8 +61,9 @@ class ArchitectAgent:
                 RequirementUtils.analyze_requirement(item, index=index)
                 for index, item in enumerate(RequirementUtils.split_requirements(requirement), start=1)
             ]
+        structured_use_cases = use_cases or [item.get("use_case", {}) for item in requirement_items if item.get("use_case")]
 
-        local_artifacts = self._generate_local_artifacts(requirement_items)
+        local_artifacts = self._generate_local_artifacts(requirement_items, structured_use_cases)
         local_artifacts["local_use_case_diagram"] = local_artifacts["use_case_diagram"]
         local_artifacts["local_use_case_diagram_url"] = local_artifacts["use_case_diagram_url"]
         local_artifacts["local_class_diagram"] = local_artifacts["class_diagram"]
@@ -74,14 +81,15 @@ class ArchitectAgent:
         local_artifacts["class_diagram_source"] = "local"
         local_artifacts["sequence_diagram_source"] = "local"
         if self.llm is not None:
-            llm_use_case_result = self._llm_use_case_diagram(requirement_items, feedback)
+            llm_use_case_result = self._llm_use_case_diagram(requirement_items, feedback, structured_use_cases)
             use_case_candidate = llm_use_case_result.get("plantuml_code", "")
             if use_case_candidate:
                 local_artifacts["llm_use_case_diagram"] = use_case_candidate
                 local_artifacts["llm_use_case_diagram_url"] = PlantUMLUtils.render_plantuml(use_case_candidate)
-                local_artifacts["use_case_diagram"] = use_case_candidate
-                local_artifacts["use_case_diagram_url"] = local_artifacts["llm_use_case_diagram_url"]
-                local_artifacts["use_case_diagram_source"] = "llm"
+                if self._use_case_diagram_matches_structured_use_cases(use_case_candidate, structured_use_cases):
+                    local_artifacts["use_case_diagram"] = use_case_candidate
+                    local_artifacts["use_case_diagram_url"] = local_artifacts["llm_use_case_diagram_url"]
+                    local_artifacts["use_case_diagram_source"] = "llm"
 
             llm_result = self._llm_class_diagram(requirement_items, feedback)
             class_candidate = llm_result.get("plantuml_code", "")
@@ -113,14 +121,18 @@ class ArchitectAgent:
             "design_elements": local_artifacts["design_elements"],
         }
 
-    def _generate_local_artifacts(self, requirement_items: list[dict[str, Any]]) -> dict[str, Any]:
-        use_case_diagram = PlantUMLUtils.generate_use_case_diagram(requirement_items)
+    def _generate_local_artifacts(
+        self,
+        requirement_items: list[dict[str, Any]],
+        use_cases: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        use_case_diagram = PlantUMLUtils.generate_use_case_diagram_from_use_cases(use_cases or [])
         class_diagram = PlantUMLUtils.generate_class_diagram_from_requirements(requirement_items)
         sequence_diagram = PlantUMLUtils.generate_sequence_diagram_from_requirements(requirement_items)
         entities = RequirementUtils.infer_entities(requirement_items)
         design_elements = [entity["name"] for entity in entities] + [
-            item.get("use_case", {}).get("name", item.get("id", "UseCase"))
-            for item in requirement_items
+            use_case.get("name", use_case.get("id", "UseCase"))
+            for use_case in (use_cases or [])
         ]
         return {
             "use_case_diagram": use_case_diagram,
@@ -141,12 +153,18 @@ class ArchitectAgent:
             feedback=feedback,
         )
 
-    def _llm_use_case_diagram(self, requirement_items: list[dict[str, Any]], feedback: str) -> dict[str, Any]:
+    def _llm_use_case_diagram(
+        self,
+        requirement_items: list[dict[str, Any]],
+        feedback: str,
+        use_cases: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         return self._llm_diagram(
             diagram_kind="use_case_diagram",
             requirement_items=requirement_items,
             knowledge_results=(knowledge_base.query(self._build_retrieval_query(requirement_items, feedback), n_results=4) if self.enable_rag else []),
             feedback=feedback,
+            use_cases=use_cases,
         )
 
     def _llm_sequence_diagram(self, requirement_items: list[dict[str, Any]], feedback: str) -> dict[str, Any]:
@@ -164,12 +182,14 @@ class ArchitectAgent:
         requirement_items: list[dict[str, Any]],
         knowledge_results: list[dict[str, Any]],
         feedback: str,
+        use_cases: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         prompt = self._build_architect_prompt(
             requirement_items,
             knowledge_results,
             feedback=feedback,
             diagram_kind=diagram_kind,
+            use_cases=use_cases,
         )
         content = invoke_llm_text(
             self.runtime,
@@ -194,6 +214,21 @@ class ArchitectAgent:
         }
 
     @staticmethod
+    def _use_case_diagram_matches_structured_use_cases(
+        plantuml_code: str,
+        structured_use_cases: list[dict[str, Any]],
+    ) -> bool:
+        expected_names = [
+            str(use_case.get("name", "") or "").strip()
+            for use_case in structured_use_cases
+        ]
+        expected_names = [name for name in expected_names if name]
+        if not expected_names:
+            return False
+        actual_count = len(re.findall(r"(?im)^\s*usecase\b", plantuml_code or ""))
+        return actual_count == len(expected_names) and all(f'"{name}"' in plantuml_code for name in expected_names)
+
+    @staticmethod
     def _parse_llm_output(content: str) -> ArchitectLLMOutput | None:
         parsed = extract_json_object(content)
         if not parsed:
@@ -209,11 +244,18 @@ class ArchitectAgent:
         knowledge_results: list[dict[str, Any]],
         feedback: str = "",
         diagram_kind: str = "class_diagram",
+        use_cases: list[dict[str, Any]] | None = None,
     ) -> str:
         requirements = chr(10).join(f"- {item['ears_requirement']}" for item in requirement_items)
         business_context = chr(10).join(
             f"- {item.get('use_case', {}).get('name', item.get('id', '业务用例'))}: {item.get('original', '')}"
             for item in requirement_items
+        )
+        structured_use_cases = use_cases or [item.get("use_case", {}) for item in requirement_items if item.get("use_case")]
+        expected_use_case_count = len(structured_use_cases)
+        expected_use_case_names = "、".join(
+            str(use_case.get("name", use_case.get("id", "业务用例")))
+            for use_case in structured_use_cases
         )
         references = ArchitectAgent._format_knowledge_results(knowledge_results)
         target_name = {
@@ -236,8 +278,11 @@ class ArchitectAgent:
                     "1. 只输出用例图，不得输出类图、顺序图或解释文字",
                     "2. `plantuml_code` 必须包含 @startuml 和 @enduml",
                     "3. 必须声明参与者 actor，并使用 usecase 表示业务用例",
-                    "4. 每个核心业务用例都应与至少一个参与者建立关联",
-                    "5. 不得编造输入需求、审查反馈或参考知识中不存在的业务事实",
+                    f"4. 本次必须且只能生成 {expected_use_case_count} 个 usecase，且每条结构化需求只对应一个 usecase",
+                    f"5. usecase 名称必须逐字使用这些结构化用例名称：{expected_use_case_names}",
+                    "6. 不得把单个需求拆成多个业务用例，也不得合并多个需求成一个用例",
+                    "7. 每个核心业务用例都应与至少一个参与者建立关联",
+                    "8. 不得编造输入需求、审查反馈或参考知识中不存在的业务事实",
                 ]
             ),
             "sequence_diagram": "\n".join(

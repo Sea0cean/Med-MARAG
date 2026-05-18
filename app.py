@@ -272,9 +272,9 @@ def _render_review_issue_panel(title: str, items: list[str], tone: str, empty_te
     rows = items or [empty_text]
     if has_items:
         list_html = "".join(f"<li>{html.escape(str(item))}</li>" for item in rows)
-        content_html = f'<ul class="review-panel-list">{list_html}</ul>'
+        content_html = f'<div class="review-panel-body"><ul class="review-panel-list">{list_html}</ul></div>'
     else:
-        content_html = f'<div class="review-panel-empty">{html.escape(empty_text)}</div>'
+        content_html = f'<div class="review-panel-body"><div class="review-panel-empty">{html.escape(empty_text)}</div></div>'
     st.markdown(
         f"""
         <div class="review-panel {tone_class}">
@@ -981,12 +981,14 @@ def inject_custom_styles() -> None:
                 }
 
                 .review-panel {
-                    height: 100%;
+                    display: flex;
+                    flex-direction: column;
                     padding: 1.15rem 1.2rem;
                     border-radius: 22px;
                     border: 1px solid var(--border-soft);
                     background: rgba(255, 255, 255, 0.76);
                     box-shadow: 0 10px 28px rgba(34, 69, 70, 0.05);
+                    min-height: 0;
                 }
 
                 .review-panel-head {
@@ -1021,6 +1023,14 @@ def inject_custom_styles() -> None:
                 .review-panel-list {
                     margin: 0;
                     padding-left: 1.1rem;
+                }
+
+                .review-panel-body {
+                    flex: 1 1 auto;
+                    min-height: 0;
+                    overflow: auto;
+                    max-height: 28rem;
+                    padding-right: 0.1rem;
                 }
 
                 .review-panel-list li {
@@ -1074,6 +1084,28 @@ def inject_custom_styles() -> None:
                     color: var(--text-muted);
                     line-height: 1.8;
                     white-space: pre-wrap;
+                }
+
+                @media (max-width: 900px) {
+                    .review-panel-body {
+                        max-height: 20rem;
+                    }
+
+                    .review-overview-top {
+                        flex-direction: column;
+                    }
+                }
+
+                @media (max-width: 720px) {
+                    .review-score-grid {
+                        grid-template-columns: 1fr;
+                    }
+
+                    .review-panel-head,
+                    .review-detail-summary {
+                        align-items: flex-start;
+                        flex-direction: column;
+                    }
                 }
 
                 .review-detail-summary {
@@ -1398,11 +1430,9 @@ def render_result_tabs(result: dict[str, Any]) -> None:
                 render_artifact_table(item.get("content_md", ""))
 
     with tabs[3]:
-        st.subheader("Reviewer 审查结果")
+        st.subheader("合规审查员智能体审查结果")
         review_report = result.get("Review_Report", {})
-        scores = review_report.get("scores", {})
         _render_review_overview(result, review_report)
-        _render_review_score_cards(scores)
 
         blocking_issues = result.get("Review_Blocking_Issues", []) or []
         warning_issues = result.get("Review_Warnings", []) or []
@@ -1588,11 +1618,11 @@ def main() -> None:
         cols[2].metric("运行状态", result.get("LLM_Runtime_Status", "offline"))
         st.caption(f"当前运行模式：{'LLM 增强' if result.get('LLM_Enabled') else '本地规则'}")
         if result.get("Clarification_Questions"):
-            st.warning("Analyst Agent 给出少量补充建议（流程已继续产出制品）：")
+            st.warning("需求分析师智能体给出少量补充建议（流程已继续产出制品）：")
             for question in result.get("Clarification_Questions", []):
                 st.markdown(f"- {question}")
         if result.get("Analyst_Thinking"):
-            with st.expander("查看 Analyst 中间分析过程", expanded=False):
+            with st.expander("查看需求分析师中间分析过程", expanded=False):
                 for trace in result.get("Analyst_Thinking", []):
                     st.code(trace, language="xml")
         render_result_tabs(result)

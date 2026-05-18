@@ -104,10 +104,130 @@ def test_offline_pipeline_generates_multiple_use_cases_for_complex_emergency_flo
     assert len(state["Requirement_Items"]) >= 4
     assert len(state["Use_Cases"]) >= 4
     use_case_names = [item.get("name") for item in state["Use_Cases"]]
-    assert "录入急诊分诊信息" in use_case_names
-    assert "办理急诊挂号支付" in use_case_names
-    assert "建立临时急诊档案" in use_case_names
-    assert "处理同步异常告警" in use_case_names
+    assert "登记分诊信息" in use_case_names
+    assert "办理急诊挂号" in use_case_names
+    assert "建立临时病历" in use_case_names
+    assert "处理同步异常" in use_case_names
+    assert all(len(name) <= 12 for name in use_case_names)
+
+
+def test_use_case_names_are_compacted_to_formal_verb_object_phrases():
+    samples = [
+        (
+            "补充三级四级患者资料并确认分类",
+            "对于三级四级患者，系统应补充患者资料并确认分类",
+            "确认患者分类",
+        ),
+        (
+            "填写急诊患者资料并自动分诊",
+            "当急诊患者到达时，护士应填写急诊患者资料并自动分诊",
+            "执行自动分诊",
+        ),
+        (
+            "处理急救、费用补缴及每日同步",
+            "系统应处理急救、费用补缴及每日同步",
+            "补缴急救费用",
+        ),
+        (
+            "处理同步网络异常并通知运维",
+            "如果同步过程中出现网络异常，系统应通知运维",
+            "处理同步异常",
+        ),
+    ]
+
+    for action, original, expected in samples:
+        assert (
+            RequirementUtils.normalize_use_case_name(action, original_text=original, actions=[action])
+            == expected
+        )
+
+
+def test_split_requirements_extracts_full_emergency_use_case_set_from_narrative():
+    requirement = (
+        "当急诊患者到达医院后，护士需在系统中填写患者个人资料以及心率、血压、血氧等相关生理参数。"
+        "系统根据此信息可对患者进行初步急诊分类，通常分为1-4级。"
+        "如果患者被确定为三级或四级，则系统提示患者去自助挂号机或人工窗口办理挂号手续，"
+        "在挂号时患者可通过微信、支付宝或医保卡等多种方式进行缴费，在缴费成功后，"
+        "系统会给患者一个急诊挂号流水号同时把相关信息发送到相应科室医生的工作站上，"
+        "在医生工作站里医生可以查看该患者的分诊情况并据此开立电子处方。"
+        "这样就可以使病人的就诊信息在系统内得到连续保存、统一管理。"
+        "而对于被评为一级或者二级危重病人，其操作过程会有区别，"
+        "在这时护士应马上进行急救工作，系统应该能够支持跳过缴费的过程，为病人创建一个临时急诊病历，"
+        "然后在急救完成后，系统还要能够支持补缴挂号费和抢救费，以保证业务流程的完整。"
+        "从数据的角度讲，所有的急诊入院病人的病历资料及处方等，"
+        "在每天凌晨都会有一个自动同步的过程并上传到医院的核心数据库进行备份。"
+        "如果有同步过程发生网络超时或连接失败等问题时，系统需保存相应日志并以短信形式发送给运维人员处理。"
+    )
+
+    state = run_modeller_pipeline(
+        requirement,
+        config=PipelineConfig(provider="offline", max_iterations=2),
+    )
+
+    use_cases = state["Use_Cases"]
+    assert [item.get("name") for item in use_cases] == [
+        "登记分诊信息",
+        "办理急诊挂号",
+        "开立电子处方",
+        "建立临时病历",
+        "补缴急救费用",
+        "同步急诊数据",
+        "处理同步异常",
+    ]
+    assert [item.get("primary_actor") for item in use_cases] == [
+        "护士",
+        "患者",
+        "医生",
+        "护士",
+        "患者",
+        "定时任务",
+        "运维人员",
+    ]
+    assert state["UML_Artifacts"]["use_case_diagram"].count("usecase ") == 7
+    assert state["UML_Artifacts"]["use_case_diagram"].count("Operator --> UC007") == 1
+
+
+def test_use_case_extractor_can_merge_multiple_requirement_items_into_fewer_business_goals():
+    requirement = (
+        "系统创建挂号记录；"
+        "系统生成急诊挂号流水号；"
+        "系统将患者分诊信息推送到医生工作站；"
+        "医生在工作站查看分诊情况并开立电子处方。"
+    )
+
+    state = run_modeller_pipeline(
+        requirement,
+        config=PipelineConfig(provider="offline", max_iterations=2),
+    )
+
+    assert len(state["Requirement_Items"]) == 4
+    assert [item.get("name") for item in state["Use_Cases"]] == [
+        "办理急诊挂号",
+        "开立电子处方",
+    ]
+    assert state["Use_Cases"][0]["requirement_ids"] == ["REQ001", "REQ002", "REQ003"]
+    assert state["Use_Cases"][1]["requirement_ids"] == ["REQ004"]
+
+
+def test_ears_output_is_normalized_to_full_if_then_and_endif_structure():
+    ears = RequirementUtils.normalize_ears_text("IF 患者预约挂号成功 THEN 系统应发送确认通知 AND 系统应更新状态 ENDIF")
+
+    assert ears.splitlines() == [
+        "IF 患者预约挂号成功",
+        "THEN 系统应发送确认通知",
+        "AND 系统应更新状态",
+        "ENDIF",
+    ]
+
+
+def test_ears_output_falls_back_to_local_template_when_llm_text_is_missing():
+    ears = RequirementUtils.normalize_ears_text("", "患者预约挂号成功时，系统应发送确认短信给患者")
+
+    assert ears.splitlines() == [
+        "IF 患者预约挂号成功",
+        "THEN 系统应发送确认短信给患者",
+        "ENDIF",
+    ]
 
 
 def test_pipeline_generates_exception_report_when_max_iterations_reached():

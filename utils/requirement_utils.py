@@ -66,28 +66,45 @@ class RequirementUtils:
         r"^如果",
         r"^若",
         r"^对于",
+        r"^而对于",
         r"^在数据管理方面",
         r"^在.+方面",
+        r"^从数据",
         r"^每日",
         r"^每当",
     )
 
     USE_CASE_NAME_PATTERNS = [
-        (("分诊", "生命体征"), "录入急诊分诊信息"),
+        (("网络", "同步", "异常"), "处理同步异常"),
+        (("同步", "运维"), "处理同步异常"),
+        (("错误日志", "短信"), "处理同步异常"),
+        (("三级", "四级", "分类"), "确认患者分类"),
+        (("分类", "确认"), "确认患者分类"),
+        (("生理参数", "分类"), "登记分诊信息"),
+        (("分诊", "生命体征"), "录入分诊信息"),
         (("分诊", "急诊分级"), "执行急诊分级"),
-        (("挂号", "支付"), "办理急诊挂号支付"),
-        (("挂号", "流水号"), "生成急诊挂号流水"),
-        (("抢救", "临时急诊档案"), "建立临时急诊档案"),
-        (("抢救", "补缴"), "补缴急诊抢救费用"),
-        (("数据仓库", "同步"), "同步急诊业务数据"),
-        (("错误日志", "短信"), "处理同步异常告警"),
-        (("同步", "运维"), "处理同步异常告警"),
-        (("预约", "通知"), "发送预约确认通知"),
-        (("挂号", "通知"), "发送挂号业务通知"),
+        (("自动", "分诊"), "执行自动分诊"),
+        (("三级", "四级", "挂号"), "办理急诊挂号"),
+        (("挂号", "支付"), "办理挂号支付"),
+        (("挂号", "流水号"), "生成挂号流水"),
+        (("医生工作站", "电子处方"), "开立电子处方"),
+        (("查看", "分诊", "电子处方"), "开立电子处方"),
+        (("临时急诊病历",), "建立临时病历"),
+        (("抢救", "临时急诊档案"), "建立急诊档案"),
+        (("急救", "临时"), "建立临时病历"),
+        (("急救", "补缴"), "补缴急救费用"),
+        (("抢救", "补缴"), "补缴抢救费用"),
+        (("急救", "同步"), "补缴急救费用"),
+        (("核心数据库", "备份"), "同步急诊数据"),
+        (("每天凌晨", "同步"), "同步急诊数据"),
+        (("数据仓库", "同步"), "同步业务数据"),
+        (("每日", "同步"), "同步业务数据"),
+        (("预约", "通知"), "发送确认通知"),
+        (("挂号", "通知"), "发送挂号通知"),
         (("病历", "查看"), "查看电子病历"),
         (("病历", "更新"), "更新电子病历"),
         (("支付", "失败"), "处理支付异常"),
-        (("支付", "结算"), "执行支付结算"),
+        (("支付", "结算"), "处理支付"),
         (("登录", "身份"), "执行身份认证"),
     ]
 
@@ -99,6 +116,8 @@ class RequirementUtils:
         "管理员",
         "前台",
         "系统",
+        "运维人员",
+        "运维",
         "家属",
     ]
 
@@ -245,7 +264,7 @@ class RequirementUtils:
             if sentence and sentence.strip().strip("。 ")
         ]
         if len(sentences) <= 1:
-            return [chunk.strip().strip("。 ")]
+            return RequirementUtils._split_business_goal_segments(chunk.strip().strip("。 "))
 
         requirements: list[str] = []
         current_sentences: list[str] = []
@@ -262,7 +281,36 @@ class RequirementUtils:
         if current_sentences:
             requirements.append("。".join(current_sentences).strip("。 "))
 
-        return [item for item in requirements if item]
+        split_requirements: list[str] = []
+        for item in requirements:
+            split_requirements.extend(RequirementUtils._split_business_goal_segments(item))
+        return [item for item in split_requirements if item]
+
+    @staticmethod
+    def _split_business_goal_segments(block: str) -> list[str]:
+        text = block.strip().strip("。 ")
+        if not text:
+            return []
+
+        text = re.sub(r"。?这样就可以使[^。]*", "", text).strip("。 ")
+        if not text:
+            return []
+
+        split_markers = (
+            r"(?=在医生工作站里)",
+            r"(?=医生在工作站)",
+            r"(?=然后在急救完成后)",
+            r"(?=在急救完成后)",
+            r"(?=等抢救结束之后)",
+            r"(?=从数据的角度讲)",
+            r"(?=而对于)",
+        )
+        pieces = [
+            piece.strip("。 ，,")
+            for piece in re.split("|".join(split_markers), text)
+            if piece.strip("。 ，,") and piece.strip("。 ，,") not in {"然后", "随后"}
+        ]
+        return pieces or [text]
 
     @staticmethod
     def _clean_phrase(text: str) -> str:
@@ -272,11 +320,17 @@ class RequirementUtils:
     @staticmethod
     def _extract_condition(requirement_text: str) -> str:
         match = re.search(
-            r"(?:当|如果|若|在)(.+?)(?:时|后|成功时|成功后|失败时|失败后|触发时|提交后|完成后|，|,)",
+            r"(?:当|如果|若|在)(.+?)(?:时|后|，|,)",
             requirement_text,
         )
         if match:
             return RequirementUtils._clean_phrase(match.group(1))
+        fallback = re.search(
+            r"^(.+?)(?:时|后|，|,)",
+            requirement_text,
+        )
+        if fallback:
+            return RequirementUtils._clean_phrase(fallback.group(1))
         return "系统接收到业务请求"
 
     @staticmethod
@@ -312,9 +366,27 @@ class RequirementUtils:
     @staticmethod
     def _extract_actors(requirement_text: str) -> list[str]:
         actors = [actor for actor in RequirementUtils.ACTOR_KEYWORDS if actor in requirement_text]
+        if "运维人员" in actors and "运维" in actors:
+            actors.remove("运维")
+        if any(marker in requirement_text for marker in ("每天凌晨", "每日", "自动同步", "定时")) and "定时任务" not in actors:
+            actors.append("定时任务")
+        if any(marker in requirement_text for marker in ("缴费", "补缴", "挂号费", "抢救费")) and "患者" not in actors:
+            actors.append("患者")
         if "系统" not in actors:
             actors.append("系统")
         return actors
+
+    @staticmethod
+    def _select_primary_actor(requirement_text: str, actors: list[str]) -> str:
+        if any(marker in requirement_text for marker in ("每天凌晨", "每日", "自动同步", "定时")):
+            return "定时任务"
+        if "运维人员" in actors and any(marker in requirement_text for marker in ("网络超时", "连接失败", "短信", "日志")):
+            return "运维人员"
+        if "医生" in actors and any(marker in requirement_text for marker in ("医生工作站", "开立", "处方", "接诊")):
+            return "医生"
+        if "护士" in actors and any(marker in requirement_text for marker in ("填写", "分诊", "急救", "抢救", "生命体征", "生理参数")):
+            return "护士"
+        return next((actor for actor in actors if actor != "系统"), "用户")
 
     @staticmethod
     def parse_natural_language(requirement_text: str) -> dict[str, Any]:
@@ -327,7 +399,7 @@ class RequirementUtils:
             if keyword in requirement_text:
                 constraints.append(keyword)
 
-        primary_actor = next((actor for actor in actors if actor != "系统"), "用户")
+        primary_actor = RequirementUtils._select_primary_actor(requirement_text, actors)
         return {
             "original": requirement_text,
             "components": {
@@ -347,11 +419,47 @@ class RequirementUtils:
         actions = parsed["components"]["actions"] or ["执行对应业务操作"]
         action_line = f"系统应{actions[0]}"
         additional_actions = "\n".join(f"AND 系统应{action}" for action in actions[1:])
-        return Config.get_ears_template().format(
+        ears = Config.get_ears_template().format(
             condition=condition,
             action=action_line,
             additional_actions=additional_actions,
         ).strip()
+        return "\n".join(line for line in ears.splitlines() if line.strip())
+
+    @staticmethod
+    def normalize_ears_text(ears_requirement: str, fallback_requirement: str = "") -> str:
+        text = (ears_requirement or "").strip()
+        if not text:
+            return RequirementUtils.convert_to_ears(fallback_requirement) if fallback_requirement else ""
+
+        if "\n" in text:
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            has_required_blocks = (
+                lines
+                and lines[0].startswith("IF ")
+                and any(line.startswith("THEN ") for line in lines)
+                and lines[-1] == "ENDIF"
+            )
+            if has_required_blocks:
+                return "\n".join(lines)
+
+        match = re.match(r"^IF\s+(.+?)\s+THEN\s+(.+?)\s+ENDIF$", text, re.S)
+        if match:
+            condition = RequirementUtils._clean_phrase(match.group(1))
+            action_segment = match.group(2).strip()
+            actions = [
+                RequirementUtils._clean_phrase(action)
+                for action in re.split(r"\s+AND\s+", action_segment)
+                if RequirementUtils._clean_phrase(action)
+            ]
+            if actions:
+                lines = [f"IF {condition}", f"THEN {actions[0]}"]
+                lines.extend(f"AND {action}" for action in actions[1:])
+                lines.append("ENDIF")
+                return "\n".join(lines)
+
+        normalized = RequirementUtils.convert_to_ears(fallback_requirement) if fallback_requirement else text
+        return "\n".join(line for line in normalized.splitlines() if line.strip())
 
     @staticmethod
     def build_acceptance_criteria(analysis: dict[str, Any]) -> list[str]:
@@ -424,19 +532,42 @@ class RequirementUtils:
             ("需要", ""),
             ("要", ""),
             ("对应的", ""),
+            ("自动", ""),
+            ("相关", ""),
         ]
         for old, new in replacements:
             text = text.replace(old, new)
         text = text.replace("通知通知", "通知")
-        text = re.sub(r"^(支持|实现|完成|进行)", "", text)
+        text = re.split(r"(?:并且|并|且|同时|以及|然后|随后|及|、|，|,)", text, maxsplit=1)[0]
+        text = re.sub(r"^(支持|实现|完成|进行|填写|补充)", "", text)
+        text = re.sub(r"(?:数据|资料|信息)$", "信息", text)
         text = re.sub(r"(。.*)$", "", text)
         text = re.sub(r"(，.*)$", "", text)
         text = re.sub(r"\s+", "", text)
         text = text.strip("，,。；;")
         text = RequirementUtils._normalize_use_case_name_style(text)
-        if len(text) > 18:
-            text = text[:18]
+        text = RequirementUtils._compress_use_case_name(text)
         return text or "执行业务操作"
+
+    @staticmethod
+    def _compress_use_case_name(text: str) -> str:
+        normalized = text.strip()
+        simplifications = [
+            (("同步", "异常"), "处理同步异常"),
+            (("网络", "异常"), "处理网络异常"),
+            (("支付", "异常"), "处理支付异常"),
+            (("费用",), "处理费用"),
+            (("分诊",), "执行分诊"),
+            (("分类",), "确认分类"),
+            (("档案",), "建立档案"),
+            (("病历", "查看"), "查看病历"),
+            (("病历", "更新"), "更新病历"),
+            (("通知",), "发送通知"),
+        ]
+        for keywords, compact in simplifications:
+            if len(normalized) > 10 and all(keyword in normalized for keyword in keywords):
+                return compact
+        return normalized[:12] if len(normalized) > 12 else normalized
 
     @staticmethod
     def _normalize_use_case_name_style(text: str) -> str:

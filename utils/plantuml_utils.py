@@ -30,6 +30,9 @@ class PlantUMLUtils:
         "管理员": "Admin",
         "家属": "Family",
         "用户": "User",
+        "运维人员": "Operator",
+        "运维": "Operator",
+        "定时任务": "Scheduler",
     }
     _RELATION_OPERATORS = ("<|--", "<|..", "*--", "o--", "-->", "..>", "--", "<--", "<..")
 
@@ -249,10 +252,21 @@ class PlantUMLUtils:
 
     @staticmethod
     def generate_use_case_diagram(requirement_items: list[dict[str, Any]]) -> str:
+        use_cases = [item.get("use_case", {}) for item in requirement_items if item.get("use_case")]
+        if use_cases:
+            return PlantUMLUtils.generate_use_case_diagram_from_use_cases(use_cases)
+        return PlantUMLUtils.generate_use_case_diagram_from_use_cases([])
+
+    @staticmethod
+    def generate_use_case_diagram_from_use_cases(use_cases: list[dict[str, Any]]) -> str:
         lines = ["@startuml", "left to right direction"]
         actors_seen: set[str] = set()
-        for item in requirement_items:
-            for actor in item.get("actors", []):
+        for use_case in use_cases:
+            actors = [
+                use_case.get("primary_actor", "用户"),
+                *(use_case.get("supporting_actors", []) or []),
+            ]
+            for actor in actors:
                 if actor == "系统":
                     continue
                 alias = PlantUMLUtils._actor_alias(actor)
@@ -261,21 +275,30 @@ class PlantUMLUtils:
                     lines.append(f'actor "{actor}" as {alias}')
 
         lines.append('rectangle "Med-MARAG" {')
-        for idx, item in enumerate(requirement_items, start=1):
-            use_case = item.get("use_case", {})
+        for idx, use_case in enumerate(use_cases, start=1):
             alias = f"UC{idx:03d}"
             name = use_case.get("name", f"业务用例{idx}")
             lines.append(f'  usecase "{name}" as {alias}')
         lines.append("}")
 
-        for idx, item in enumerate(requirement_items, start=1):
+        relations_seen: set[tuple[str, str]] = set()
+        for idx, use_case in enumerate(use_cases, start=1):
             alias = f"UC{idx:03d}"
-            primary_actor = item.get("primary_actor", "用户")
-            lines.append(f"{PlantUMLUtils._actor_alias(primary_actor)} --> {alias}")
-            for actor in item.get("actors", []):
+            primary_actor = use_case.get("primary_actor", "用户")
+            primary_alias = PlantUMLUtils._actor_alias(primary_actor)
+            relation = (primary_alias, alias)
+            if relation not in relations_seen:
+                relations_seen.add(relation)
+                lines.append(f"{primary_alias} --> {alias}")
+            for actor in use_case.get("supporting_actors", []) or []:
                 if actor in {primary_actor, "系统"}:
                     continue
-                lines.append(f"{PlantUMLUtils._actor_alias(actor)} --> {alias}")
+                actor_alias = PlantUMLUtils._actor_alias(actor)
+                relation = (actor_alias, alias)
+                if relation in relations_seen:
+                    continue
+                relations_seen.add(relation)
+                lines.append(f"{actor_alias} --> {alias}")
 
         lines.append("@enduml")
         return "\n".join(lines)

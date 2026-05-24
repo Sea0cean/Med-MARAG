@@ -1,6 +1,6 @@
 # Med-MARAG
 
-基于毕业论文《面向医疗领域的 LLM 驱动型需求分析与 UML 辅助建模技术》实现的原型项目。系统围绕论文中的主线能力构建：
+基于毕业论文《融合大模型多智能体与检索增强生成的医疗需求工程智能化建模方法》实现的原型系统。系统围绕论文中的主线能力构建：
 
 - 医疗领域 RAG 知识增强
 - Analyst / Architect / Reviewer 多智能体闭环
@@ -37,7 +37,7 @@
 .venv/bin/python run_pipeline.py "当患者预约挂号成功时，系统应发送确认短信给患者" --no-llm
 ```
 
-如果想看完整 JSON：
+完整 JSON：
 
 ```bash
 .venv/bin/python run_pipeline.py "当护士完成分诊评估时，系统应生成分诊任务并更新排队状态" --no-llm --json
@@ -57,7 +57,7 @@
 streamlit run app.py
 ```
 
-### 4. 指定 Provider 运行
+### 4. 指定 Provider 运行示例
 
 离线模式：
 
@@ -79,7 +79,7 @@ OpenAI 模式：
 
 ### 5. 结构化需求输入集转换
 
-项目支持将需求输入集从 `.xlsx` 或 `.csv` 转换为统一的结构化格式 `id/category/requirement`。当前也兼容你使用的双列表格形式：第一列为分类，第二列为需求句子，无表头。
+项目支持将需求输入集从 `.xlsx` 或 `.csv` 转换为统一的结构化格式 `id/category/requirement`
 
 ```bash
 conda run -n Med-MARAG-py311 python scripts/convert_requirements_csv.py \
@@ -89,8 +89,6 @@ conda run -n Med-MARAG-py311 python scripts/convert_requirements_csv.py \
 ```
 
 ## 环境变量
-
-复制 `.env.example` 到 `.env` 后按需填写。推荐优先使用通用变量 `LLM_*`，同时兼容历史的 `DEEPSEEK_*` 配置：
 
 ```env
 LLM_PROVIDER=offline
@@ -129,12 +127,3 @@ PROJECT_ROOT=/Users/seaocean/projects/Python/Med-MARAG
   - 测试用例
   - 追溯矩阵
   - 审查反馈
-
-## 适合答辩的演示流程
-
-1. 输入 1-3 条医疗场景需求。
-2. 展示 EARS 标准化结果。
-3. 展示用例图、类图、序列图代码。
-4. 展示 Reviewer 审查结果和评分。
-5. 展示自动生成的测试用例与追溯矩阵。
-6. 说明系统支持 RAG、多智能体闭环与多 provider LLM 增强，并可在缺失密钥时自动回退到离线模式。
